@@ -112,6 +112,8 @@ int main(int argc, char* argv[])
         .report_interval_ms = 1000,
         .ignore_root_user = false,
         .sort_by_rss = false,
+        .min_sleep_ms = 100,
+        .max_sleep_ms = 1000
         /* omitted fields are set to zero */
     };
     int set_my_priority = 0;
@@ -147,7 +149,7 @@ int main(int argc, char* argv[])
     meminfo_t m = parse_meminfo();
 
     int c;
-    const char* short_opt = "m:s:M:S:kingN:dvr:ph";
+    const char* short_opt = "l:m:s:M:S:kingN:dvr:ph";
     struct option long_opt[] = {
         { "prefer", required_argument, NULL, LONG_OPT_PREFER },
         { "avoid", required_argument, NULL, LONG_OPT_AVOID },
@@ -170,6 +172,23 @@ int main(int argc, char* argv[])
         switch (c) {
         case -1: /* no more arguments */
         case 0: /* long option toggles */
+            break;
+        case 'l':
+            char *pt = strtok(optarg, ",");
+            if (pt == NULL) {
+                fatal(14, "-l: invalid value '%s'\n", optarg);
+            }
+            int min_sleep_ms = atoi(pt);
+            pt = strtok (NULL, ",");
+            if (pt == NULL) {
+                fatal(14, "-l: invalid value '%s'\n", optarg);
+            }
+            int max_sleep_ms = atoi(pt);
+            if (min_sleep_ms <= 0 || max_sleep_ms <= 0) {
+                fatal(14, "-l: invalid value '%s', should be two positive integers separated by comma\n", optarg);
+            }
+            args.min_sleep_ms = (unsigned) min_sleep_ms;
+            args.max_sleep_ms = (unsigned) max_sleep_ms;
             break;
         case 'm':
             // Use 99 as upper limit. Passing "-m 100" makes no sense.
@@ -273,6 +292,7 @@ int main(int argc, char* argv[])
             fprintf(stderr,
                 "Usage: %s [OPTION]...\n"
                 "\n"
+                "  -l MIN_MS,MAX_MS          minimal and maximum time to sleep between checks\n"
                 "  -m PERCENT[,KILL_PERCENT] set available memory minimum to PERCENT of total\n"
                 "                            (default 10 %%).\n"
                 "                            earlyoom sends SIGTERM once below PERCENT, then\n"
@@ -437,8 +457,8 @@ static unsigned sleep_time_ms(const poll_loop_args_t* args, const meminfo_t* m)
     const long long mem_fill_rate = 6000; // 6000MiB/s seen with "stress -m 4 --vm-bytes 4G"
     const long long swap_fill_rate = 800; //  800MiB/s seen with membomb on ZRAM
     // Clamp calculated value to this range (milliseconds)
-    const unsigned min_sleep = 100;
-    const unsigned max_sleep = 1000;
+    const unsigned min_sleep = args->min_sleep_ms;
+    const unsigned max_sleep = args->max_sleep_ms;
 
     long long mem_headroom_kib = (long long)((m->MemAvailablePercent - args->mem_term_percent) * (double)m->UserMemTotalKiB / 100);
     if (mem_headroom_kib < 0) {
