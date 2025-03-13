@@ -149,7 +149,7 @@ int main(int argc, char* argv[])
     meminfo_t m = parse_meminfo();
 
     int c;
-    const char* short_opt = "l:m:s:M:S:kingN:dvr:ph";
+    const char* short_opt = "l:L:m:s:M:S:kingN:dvr:ph";
     struct option long_opt[] = {
         { "prefer", required_argument, NULL, LONG_OPT_PREFER },
         { "avoid", required_argument, NULL, LONG_OPT_AVOID },
@@ -168,27 +168,25 @@ int main(int argc, char* argv[])
     while ((c = getopt_long(argc, argv, short_opt, long_opt, NULL)) != -1) {
         float report_interval_f = 0;
         term_kill_tuple_t tuple;
+        int sleep_ms = 0;
 
         switch (c) {
         case -1: /* no more arguments */
         case 0: /* long option toggles */
             break;
         case 'l':
-            char *pt = strtok(optarg, ",");
-            if (pt == NULL) {
-                fatal(14, "-l: invalid value '%s'\n", optarg);
+            sleep_ms = atoi(optarg);
+            if (sleep_ms <= 0) {
+                fatal(14, "-l: invalid lower bound for sleep: '%s'\n", optarg);
             }
-            int min_sleep_ms = atoi(pt);
-            pt = strtok (NULL, ",");
-            if (pt == NULL) {
-                fatal(14, "-l: invalid value '%s'\n", optarg);
+            args.min_sleep_ms = (unsigned) sleep_ms;
+            break;
+        case 'L':
+            sleep_ms = atoi(optarg);
+            if (sleep_ms <= 0) {
+                fatal(14, "-L: invalid upper bound for sleep: '%s'\n", optarg);
             }
-            int max_sleep_ms = atoi(pt);
-            if (min_sleep_ms <= 0 || max_sleep_ms <= 0) {
-                fatal(14, "-l: invalid value '%s', should be two positive integers separated by comma\n", optarg);
-            }
-            args.min_sleep_ms = (unsigned) min_sleep_ms;
-            args.max_sleep_ms = (unsigned) max_sleep_ms;
+            args.max_sleep_ms = (unsigned) sleep_ms;
             break;
         case 'm':
             // Use 99 as upper limit. Passing "-m 100" makes no sense.
@@ -292,7 +290,8 @@ int main(int argc, char* argv[])
             fprintf(stderr,
                 "Usage: %s [OPTION]...\n"
                 "\n"
-                "  -l MIN_MS,MAX_MS          minimal and maximum time to sleep between checks\n"
+                "  -l MIN_SLEEP_MS           lower bound for the time to sleep between checks\n"
+                "  -L MAX_SLEEP_M            upper bound for the time to sleep between checks\n"
                 "  -m PERCENT[,KILL_PERCENT] set available memory minimum to PERCENT of total\n"
                 "                            (default 10 %%).\n"
                 "                            earlyoom sends SIGTERM once below PERCENT, then\n"
@@ -327,6 +326,10 @@ int main(int argc, char* argv[])
             exit(13);
         }
     } /* while getopt */
+
+    if (args.max_sleep_ms < args.min_sleep_ms) {
+        fatal(13, "Upper bound for sleep time %d is lesser than lower bound %d\n", args.max_sleep_ms, args.min_sleep_ms);
+    }
 
     if (optind < argc) {
         fatal(13, "extra argument not understood: '%s'\n", argv[optind]);
