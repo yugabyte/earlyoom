@@ -1,6 +1,6 @@
 # Setting GIT_DIR keeps git from ascending to parent directories
 # and gives a nicer error message
-VERSION ?= $(shell GIT_DIR=$(shell pwd)/.git git describe --tags --dirty)
+VERSION ?= $(shell GIT_DIR=$(shell pwd)/.git git describe --tags --dirty --always 2>/dev/null || echo vdev)
 ifeq ($(VERSION),)
 VERSION := "v(unknown version)"
 $(warning Could not get version from git, setting to $(VERSION))
