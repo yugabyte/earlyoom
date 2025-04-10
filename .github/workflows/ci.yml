@@ -1,4 +1,4 @@
-name: CI - Build, Test, Cache
+name: CI - Build & Test
 
 on:
   push:
@@ -9,55 +9,30 @@ env:
   VERSION: dev
 
 jobs:
-  setup:
-    runs-on: ubuntu-latest
-    outputs:
-      go-cache-key: ${{ steps.go-cache.outputs.cache-key }}
-    steps:
-      - name: Get date hash for cache key
-        id: go-cache
-        run: echo "cache-key=go-${{ runner.os }}-${{ hashFiles('**/go.sum') }}" >> $GITHUB_OUTPUT
-
-  build:
-    needs: setup
+  build-and-test:
     runs-on: ubuntu-latest
     strategy:
       matrix:
         arch: [amd64, arm64]
+
     steps:
       - uses: actions/checkout@v3
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y make gcc cppcheck
 
       - name: Set target env
         run: |
           echo "GOOS=linux" >> $GITHUB_ENV
           echo "GOARCH=${{ matrix.arch }}" >> $GITHUB_ENV
-          echo "OUT_NAME=earlyoom-linux-${{ matrix.arch }}" >> $GITHUB_ENV
 
-      - name: Set up Go
-        uses: actions/setup-go@v4
-        with:
-          go-version: 1.21
-
-      - name: Restore Go cache
-        uses: actions/cache@v3
-        with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: ${{ needs.setup.outputs.go-cache-key }}
-
-      - name: Install deps
-        run: sudo apt-get update && sudo apt-get install -y make gcc cppcheck
-
-
-      - name: Build binary
+      - name: Build with make
         run: |
           mkdir -p $BUILD_DIR
           make clean
           make VERSION=$VERSION
           cp earlyoom $BUILD_DIR/earlyoom-linux-${{ matrix.arch }}
           tar czvf $BUILD_DIR/earlyoom-linux-${{ matrix.arch }}.tar.gz -C $BUILD_DIR earlyoom-linux-${{ matrix.arch }}
-
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -67,15 +42,7 @@ jobs:
             ${{ env.BUILD_DIR }}/earlyoom-linux-${{ matrix.arch }}
             ${{ env.BUILD_DIR }}/earlyoom-linux-${{ matrix.arch }}.tar.gz
 
-  test:
-    name: Unit Tests (amd64)
-    runs-on: ubuntu-latest
-    if: always()  # always run even if build fails (visible failure)
-    steps:
-      - uses: actions/checkout@v3
-
-      - name: Install test deps
-        run: sudo apt-get update && sudo apt-get install -y make gcc
-
-      - name: Run tests
+      - name: Run unit tests (on amd64 only)
+        if: matrix.arch == 'amd64'
         run: make test
+
