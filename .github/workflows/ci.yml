@@ -1,35 +1,57 @@
-name: CI - Build & Test
+name: CI - Build, Test, Cache
 
 on:
   push:
-    branches: [main, yb-master]
   pull_request:
-    branches: [main, yb-master]
 
 env:
   BUILD_DIR: dist
   VERSION: dev
 
 jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      go-cache-key: ${{ steps.go-cache.outputs.cache-key }}
+    steps:
+      - name: Get date hash for cache key
+        id: go-cache
+        run: echo "cache-key=go-${{ runner.os }}-${{ hashFiles('**/go.sum') }}" >> $GITHUB_OUTPUT
+
   build:
-    name: Build & Test
+    needs: setup
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        os: [linux, darwin]
         arch: [amd64, arm64]
     steps:
       - uses: actions/checkout@v3
 
+      - name: Set target env
+        run: |
+          echo "GOOS=linux" >> $GITHUB_ENV
+          echo "GOARCH=${{ matrix.arch }}" >> $GITHUB_ENV
+          echo "OUT_NAME=earlyoom-linux-${{ matrix.arch }}" >> $GITHUB_ENV
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: 1.21
+
+      - name: Restore Go cache
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ needs.setup.outputs.go-cache-key }}
+
       - name: Install deps
         run: sudo apt-get update && sudo apt-get install -y make gcc cppcheck
 
-      - name: Build
+      - name: Build binary
         run: |
           mkdir -p $BUILD_DIR
-          export GOOS=${{ matrix.os }}
-          export GOARCH=${{ matrix.arch }}
-          export OUT_NAME=earlyoom-${GOOS}-${GOARCH}
           make clean
           make VERSION=$VERSION OUT_NAME=$BUILD_DIR/$OUT_NAME
           tar czvf $BUILD_DIR/$OUT_NAME.tar.gz -C $BUILD_DIR $(basename $OUT_NAME)
@@ -37,12 +59,20 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: earlyoom-${{ matrix.os }}-${{ matrix.arch }}
+          name: earlyoom-linux-${{ matrix.arch }}
           path: |
-            dist/earlyoom-${{ matrix.os }}-${{ matrix.arch }}
-            dist/earlyoom-${{ matrix.os }}-${{ matrix.arch }}.tar.gz
+            ${{ env.BUILD_DIR }}/earlyoom-linux-${{ matrix.arch }}
+            ${{ env.BUILD_DIR }}/earlyoom-linux-${{ matrix.arch }}.tar.gz
 
-      - name: Run unit tests
-        if: matrix.os == 'linux'
+  test:
+    name: Unit Tests (amd64)
+    runs-on: ubuntu-latest
+    if: always()  # always run even if build fails (visible failure)
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Install test deps
+        run: sudo apt-get update && sudo apt-get install -y make gcc
+
+      - name: Run tests
         run: make test
-
