@@ -58,6 +58,9 @@ jobs:
           - oraclelinux:8
     steps:
       - uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+
 
       - name: Build and test in ${{ matrix.image }}
         uses: addnab/docker-run-action@v3
