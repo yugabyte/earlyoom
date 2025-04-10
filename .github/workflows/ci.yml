@@ -6,7 +6,7 @@ on:
 
 env:
   BUILD_DIR: dist
-  VERSION: dev
+  VERSION: v-dev
 
 jobs:
   build-and-test:
