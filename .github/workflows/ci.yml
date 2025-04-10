@@ -35,11 +35,10 @@ jobs:
           elif [[ "$RUNNER_OS" == "macOS" ]]; then
             brew install make cppcheck
           fi
-
       - name: Set platform-specific env
         run: |
           echo "ARCH=${{ matrix.arch }}" >> $GITHUB_ENV
-          echo "TARGET=earlyoom-${RUNNER_OS,,}-${{ matrix.arch }}" >> $GITHUB_ENV
+          echo "TARGET=earlyoom-$(echo "$RUNNER_OS" | tr '[:upper:]' '[:lower:]')-${{ matrix.arch }}" >> $GITHUB_ENV
           echo "VERSION=v999-dev-$(git describe --tags --dirty --always || echo vdev)" >> $GITHUB_ENV
 
       - name: Build binary
