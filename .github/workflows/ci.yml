@@ -1,5 +1,4 @@
 name: CI
-
 on:
   push:
   pull_request:
@@ -9,71 +8,116 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+    env:
+      GOARCH: ${{ matrix.arch }}
+
     steps:
+      - run: ls -l /proc/self/fd
 
-    # Looks like Github Actions leaks fds to child processes
-    # https://github.com/actions/runner/issues/1188
-    - run: ls -l /proc/self/fd
+      - uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
 
-# Build and test in Ubuntu VM provided by Github CI
-    - uses: actions/checkout@v2
-      with:
-        fetch-depth: 0 # Make "git describe" work
-    - run: sudo apt-get install -qq pandoc cppcheck
-    - run: make
-    - run: make test
-    - run: git clean -dxff
-
-# And also build in a number of docker containers of older
-# distributions
-    - name: Build and test in Debian Bullseye
-      uses: addnab/docker-run-action@v3
-      with:
-        image: debian:bullseye
-        options: -v ${{ github.workspace }}:/work
+      - name: Install dependencies
         run: |
-          set -ex
-          apt-get -qq update > /dev/null < /dev/null
-          apt-get -qq install make gcc golang git ca-certificates > /dev/null < /dev/null
-          cd /work
-          make
-          make test
-    - run: git clean -dxff
+          sudo apt-get update -qq
+          sudo apt-get install -y pandoc cppcheck gcc-aarch64-linux-gnu
 
-    - name: Build and test in Amazon Linux 2
-      uses: addnab/docker-run-action@v3
-      with:
-        image: amazonlinux:2
-        options: -v ${{ github.workspace }}:/work
+      - name: Build static binary for ${{ matrix.arch }}
         run: |
-          set -ex
-          yum -y -q install make gcc golang git
-          cd /work
-          git config --global --add safe.directory /work # Fix for: fatal: detected dubious ownership in repository at '/work'
-          make
-          make test
-    - run: git clean -dxff
+          make clean
+          if [ "${{ matrix.arch }}" = "arm64" ]; then
+            make CC="aarch64-linux-gnu-gcc -static"
+            mv earlyoom earlyoom-arm64
+          else
+            make CC="gcc -static"
+            mv earlyoom earlyoom-amd64
+          fi
 
-    - name: Build in Oracle Linux 7 (similar to RHEL 7, CentOS 7)
-      uses: addnab/docker-run-action@v3
-      with:
-        image: oraclelinux:7
-        options: -v ${{ github.workspace }}:/work
-        run: |
-          set -ex
-          yum -y -q install make gcc git
-          cd /work
-          make
-    - run: git clean -dxff
+      - name: Run tests (only for amd64)
+        if: matrix.arch == 'amd64'
+        run: make test
 
-    - name: Build in Oracle Linux 8 (similar to RHEL 8, CentOS 8)
-      uses: addnab/docker-run-action@v3
-      with:
-        image: oraclelinux:8
-        options: -v ${{ github.workspace }}:/work
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: earlyoom-${{ matrix.arch }}
+          path: earlyoom-${{ matrix.arch }}
+
+  docker-matrix:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        image:
+          - debian:bullseye
+          - amazonlinux:2
+          - oraclelinux:7
+          - oraclelinux:8
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Build and test in ${{ matrix.image }}
+        uses: addnab/docker-run-action@v3
+        with:
+          image: ${{ matrix.image }}
+          options: -v ${{ github.workspace }}:/work
+          run: |
+            set -ex
+            cd /work
+            case "${{ matrix.image }}" in
+              debian:bullseye)
+                apt-get -qq update
+                apt-get -qq install make gcc golang git ca-certificates
+                make
+                make test
+                ;;
+              amazonlinux:2)
+                yum -y -q install make gcc golang git
+                git config --global --add safe.directory /work
+                make
+                make test
+                ;;
+              oraclelinux:7)
+                yum -y -q install make gcc git
+                make
+                ;;
+              oraclelinux:8)
+                dnf -y -q install make gcc git
+                make
+                ;;
+            esac
+
+      - run: git clean -dxff
+
+  release:
+    needs: [build]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Flatten artifacts
         run: |
-          set -ex
-          dnf -y -q install make gcc git
-          cd /work
-          make
-    - run: git clean -dxff
+          mv dist/earlyoom-amd64/earlyoom-amd64 .
+          mv dist/earlyoom-arm64/earlyoom-arm64 .
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            earlyoom-amd64
+            earlyoom-arm64
+          name: Release ${{ github.ref_name }}
+          body: |
+            Statically-linked earlyoom binaries for ${{ github.ref_name }}
+            - `earlyoom-amd64`
+            - `earlyoom-arm64`
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
