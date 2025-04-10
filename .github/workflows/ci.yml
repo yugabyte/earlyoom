@@ -20,6 +20,7 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
+          ref: ${{ github.ref }}
 
       - name: Install build dependencies
         run: |
