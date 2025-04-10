@@ -45,4 +45,3 @@ jobs:
       - name: Run unit tests
         if: matrix.os == 'linux'
         run: make test
-
