@@ -6,7 +6,7 @@ on:
 
 env:
   BUILD_DIR: dist
-  VERSION: v-dev
+  VERSION: vdev  # use 'v1.2.3' from tag in release workflow
 
 jobs:
   build-and-test:
@@ -26,21 +26,23 @@ jobs:
           echo "GOOS=linux" >> $GITHUB_ENV
           echo "GOARCH=${{ matrix.arch }}" >> $GITHUB_ENV
 
-      - name: Build with make
+      - name: Build
         run: |
           mkdir -p $BUILD_DIR
           make clean
           make VERSION=$VERSION
-          cp earlyoom $BUILD_DIR/earlyoom-linux-${{ matrix.arch }}
-          tar czvf $BUILD_DIR/earlyoom-linux-${{ matrix.arch }}.tar.gz -C $BUILD_DIR earlyoom-linux-${{ matrix.arch }}
 
-      - name: Upload artifacts
+      - name: Package into tarball
+        run: |
+          mkdir -p $BUILD_DIR/earlyoom-${VERSION}
+          cp earlyoom $BUILD_DIR/earlyoom-${VERSION}/
+          tar czvf $BUILD_DIR/earlyoom-linux-${{ matrix.arch }}.tar.gz -C $BUILD_DIR earlyoom-${VERSION}
+
+      - name: Upload tarball
         uses: actions/upload-artifact@v4
         with:
           name: earlyoom-linux-${{ matrix.arch }}
-          path: |
-            ${{ env.BUILD_DIR }}/earlyoom-linux-${{ matrix.arch }}
-            ${{ env.BUILD_DIR }}/earlyoom-linux-${{ matrix.arch }}.tar.gz
+          path: ${{ env.BUILD_DIR }}/earlyoom-linux-${{ matrix.arch }}.tar.gz
 
       - name: Run unit tests (on amd64 only)
         if: matrix.arch == 'amd64'
