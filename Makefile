@@ -2,7 +2,7 @@
 # and gives a nicer error message
 VERSION ?= $(shell GIT_DIR=$(shell pwd)/.git git describe --tags --dirty)
 ifeq ($(VERSION),)
-VERSION := "9.9.9-b1"
+VERSION := "v(unknown version)"
 $(warning Could not get version from git, setting to $(VERSION))
 endif
 CFLAGS += -Wall -Wextra -Wformat-security -Wconversion -DVERSION=\"$(VERSION)\" -g -fstack-protector-all -std=gnu99
