@@ -6,7 +6,7 @@ on:
 
 env:
   BUILD_DIR: dist
-  VERSION: vdev
+
 
 jobs:
   build-and-test:
@@ -30,15 +30,16 @@ jobs:
         run: |
           echo "ARCH=${{ matrix.arch }}" >> $GITHUB_ENV
           echo "TARGET=earlyoom-linux-${{ matrix.arch }}" >> $GITHUB_ENV
+          echo "VERSION=$(git describe --tags --dirty --always || echo vdev)" >> $GITHUB_ENV
 
       - name: Build binary
         run: |
           mkdir -p $BUILD_DIR
           make clean
           if [ "${ARCH}" = "arm64" ]; then
-            make CC=aarch64-linux-gnu-gcc VERSION=$VERSION
+            make CC=aarch64-linux-gnu-gcc
           else
-            make VERSION=$VERSION
+            make
           fi
           mkdir -p $BUILD_DIR/earlyoom-${VERSION}
           cp earlyoom $BUILD_DIR/earlyoom-${VERSION}/
