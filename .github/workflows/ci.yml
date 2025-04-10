@@ -19,6 +19,7 @@ jobs:
       - uses: actions/checkout@v3
         with:
           fetch-depth: 0
+          fetch-tags: true
 
       - name: Install build dependencies
         run: |
@@ -30,7 +31,8 @@ jobs:
         run: |
           echo "ARCH=${{ matrix.arch }}" >> $GITHUB_ENV
           echo "TARGET=earlyoom-linux-${{ matrix.arch }}" >> $GITHUB_ENV
-          echo "VERSION=v-$(git describe --tags --dirty --always || echo vdev)" >> $GITHUB_ENV
+          echo "VERSION=$(git describe --tags --dirty --always || echo vdev)" >> $GITHUB_ENV
+
 
       - name: Build binary
         run: |
