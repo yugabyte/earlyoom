@@ -1,79 +1,60 @@
-name: CI
+name: CI - Build & Test
 
 on:
   push:
   pull_request:
-  schedule:
-    - cron: '0 23 * * 5' # Every Friday at 23:00
+
+env:
+  BUILD_DIR: dist
+
 
 jobs:
-  build:
+  build-and-test:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+
     steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          ref: ${{ github.ref }}
 
-    # Looks like Github Actions leaks fds to child processes
-    # https://github.com/actions/runner/issues/1188
-    - run: ls -l /proc/self/fd
-
-# Build and test in Ubuntu VM provided by Github CI
-    - uses: actions/checkout@v2
-      with:
-        fetch-depth: 0 # Make "git describe" work
-    - run: sudo apt-get install -qq pandoc cppcheck
-    - run: make
-    - run: make test
-    - run: git clean -dxff
-
-# And also build in a number of docker containers of older
-# distributions
-    - name: Build and test in Debian Bullseye
-      uses: addnab/docker-run-action@v3
-      with:
-        image: debian:bullseye
-        options: -v ${{ github.workspace }}:/work
+      - name: Install build dependencies
         run: |
-          set -ex
-          apt-get -qq update > /dev/null < /dev/null
-          apt-get -qq install make gcc golang git ca-certificates > /dev/null < /dev/null
-          cd /work
-          make
-          make test
-    - run: git clean -dxff
+          sudo apt-get update
+          sudo apt-get install -y make gcc cppcheck \
+            gcc-aarch64-linux-gnu  # install ARM64 cross compiler
 
-    - name: Build and test in Amazon Linux 2
-      uses: addnab/docker-run-action@v3
-      with:
-        image: amazonlinux:2
-        options: -v ${{ github.workspace }}:/work
+      - name: Set platform-specific env
         run: |
-          set -ex
-          yum -y -q install make gcc golang git
-          cd /work
-          git config --global --add safe.directory /work # Fix for: fatal: detected dubious ownership in repository at '/work'
-          make
-          make test
-    - run: git clean -dxff
+          echo "ARCH=${{ matrix.arch }}" >> $GITHUB_ENV
+          echo "TARGET=earlyoom-linux-${{ matrix.arch }}" >> $GITHUB_ENV
+          echo "VERSION=v999-dev-$(git describe --tags --dirty --always || echo vdev)" >> $GITHUB_ENV
 
-    - name: Build in Oracle Linux 7 (similar to RHEL 7, CentOS 7)
-      uses: addnab/docker-run-action@v3
-      with:
-        image: oraclelinux:7
-        options: -v ${{ github.workspace }}:/work
-        run: |
-          set -ex
-          yum -y -q install make gcc git
-          cd /work
-          make
-    - run: git clean -dxff
 
-    - name: Build in Oracle Linux 8 (similar to RHEL 8, CentOS 8)
-      uses: addnab/docker-run-action@v3
-      with:
-        image: oraclelinux:8
-        options: -v ${{ github.workspace }}:/work
+      - name: Build binary
         run: |
-          set -ex
-          dnf -y -q install make gcc git
-          cd /work
-          make
-    - run: git clean -dxff
+          mkdir -p $BUILD_DIR
+          make clean
+          if [ "${ARCH}" = "arm64" ]; then
+            make CC=aarch64-linux-gnu-gcc
+          else
+            make
+          fi
+          mkdir -p $BUILD_DIR/earlyoom-${VERSION}
+          cp earlyoom $BUILD_DIR/earlyoom-${VERSION}/
+          tar czvf $BUILD_DIR/${TARGET}.tar.gz -C $BUILD_DIR earlyoom-${VERSION}
+
+      - name: Upload tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: earlyoom-${{ matrix.arch }}
+          path: ${{ env.BUILD_DIR }}/${{ env.TARGET }}.tar.gz
+
+      - name: Run unit tests (amd64 only)
+        if: matrix.arch == 'amd64'
+        run: make test
+
