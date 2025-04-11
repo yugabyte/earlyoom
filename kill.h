@@ -31,6 +31,10 @@ typedef struct {
     regex_t* ignore_regex;
     /* memory report interval, in milliseconds */
     int report_interval_ms;
+    /* minimal interval between checks */
+    unsigned min_sleep_ms;
+    /* maximum interval between checks */
+    unsigned max_sleep_ms;
     /* Flag --dryrun was passed */
     bool dryrun;
 } poll_loop_args_t;
