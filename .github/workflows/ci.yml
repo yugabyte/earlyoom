@@ -63,10 +63,14 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          TAG_NAME="${GITHUB_REF#refs/tags/}"
+
           sudo apt-get update
           sudo apt-get install -y gh
 
-          TAG_NAME="${GITHUB_REF#refs/tags/}"
-
-          gh release upload "$TAG_NAME" ${{ env.BUILD_DIR }}/${{ env.TARGET }}.tar.gz --clobber
-
+          # Create release if not exists and upload tar.gz
+          gh release create "$TAG_NAME" ${{ env.BUILD_DIR }}/${{ env.TARGET }}.tar.gz \
+            --title "$TAG_NAME" \
+            --notes "Automated build for $TAG_NAME" \
+            --latest \
+            --clobber
