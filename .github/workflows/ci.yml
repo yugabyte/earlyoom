@@ -1,4 +1,4 @@
-name: CI - Build earlyoom on AlmaLinux 8 (glibc 2.28)
+name: CI - Build and release earlyoom for yugabytedb 
 
 on:
   push:
@@ -8,11 +8,34 @@ on:
       - 'v*'
   pull_request:
 
-env:
-  BUILD_DIR: dist
-
 jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Install GitHub CLI
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gh
+
+      - name: Create GitHub Release if not exists
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG_NAME="${GITHUB_REF#refs/tags/}"
+
+          if gh release view "$TAG_NAME" > /dev/null 2>&1; then
+            echo "Release $TAG_NAME already exists."
+          else
+            echo "Creating Release $TAG_NAME..."
+            gh release create "$TAG_NAME" \
+              --title "$TAG_NAME" \
+              --notes "Automated release for $TAG_NAME" \
+              --latest
+          fi
+
   build:
+    needs: create-release   # 👈 wait for release creation!
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -44,7 +67,6 @@ jobs:
           else
             docker run --rm -v $PWD:/work -w /work ubuntu:18.04 \
               /bin/bash -c "apt-get update && apt-get install -y build-essential gcc-aarch64-linux-gnu && make clean && make CC=aarch64-linux-gnu-gcc"
-
           fi
 
       - name: Package binary
@@ -53,23 +75,13 @@ jobs:
           cp earlyoom $BUILD_DIR/earlyoom-${VERSION}/
           tar czvf $BUILD_DIR/${TARGET}.tar.gz -C $BUILD_DIR earlyoom-${VERSION}
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: earlyoom-${{ matrix.arch }}
-          path: ${{ env.BUILD_DIR }}/${{ env.TARGET }}.tar.gz
-      - name: Upload to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Upload artifact to GitHub Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG_NAME="${GITHUB_REF#refs/tags/}"
-
           sudo apt-get update
           sudo apt-get install -y gh
 
-          # Create release if not exists and upload tar.gz
-          gh release create "$TAG_NAME" ${{ env.BUILD_DIR }}/${{ env.TARGET }}.tar.gz \
-            --title "$TAG_NAME" \
-            --notes "Automated build for $TAG_NAME" \
-            --latest 
+          TAG_NAME="${GITHUB_REF#refs/tags/}"
+
+          gh release upload "$TAG_NAME" ${{ env.BUILD_DIR }}/${{ env.TARGET }}.tar.gz --clobber
