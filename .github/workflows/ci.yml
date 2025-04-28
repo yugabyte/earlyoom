@@ -58,7 +58,8 @@ jobs:
         with:
           name: earlyoom-${{ matrix.arch }}
           path: ${{ env.BUILD_DIR }}/${{ env.TARGET }}.tar.gz
-      - name: Upload to GitHub Release
+
+      - name: Upload artifact to GitHub Release (create if needed)
         if: startsWith(github.ref, 'refs/tags/')
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -68,8 +69,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gh
 
-          # Create release if not exists and upload tar.gz
-          gh release create "$TAG_NAME" ${{ env.BUILD_DIR }}/${{ env.TARGET }}.tar.gz \
-            --title "$TAG_NAME" \
-            --notes "Automated build for $TAG_NAME" \
-            --latest 
+          set +e
+          echo "Trying to upload to existing release..."
+          gh release upload "$TAG_NAME" ${{ env.BUILD_DIR }}/${{ env.TARGET }}.tar.gz --clobber
+          STATUS=$?
+          set -e
+
+          if [ $STATUS -ne 0 ]; then
+            echo "Release does not exist, creating new release..."
+            gh release create "$TAG_NAME" ${{ env.BUILD_DIR }}/${{ env.TARGET }}.tar.gz \
+              --title "$TAG_NAME" \
+              --notes "Automated release for $TAG_NAME" \
+              --latest
+          fi
