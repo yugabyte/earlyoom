@@ -1,79 +1,57 @@
-name: CI
+name: CI - Build earlyoom on AlmaLinux 8 (glibc 2.28)
 
 on:
   push:
   pull_request:
-  schedule:
-    - cron: '0 23 * * 5' # Every Friday at 23:00
+
+env:
+  BUILD_DIR: dist
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+
     steps:
+      - uses: actions/checkout@v3
 
-    # Looks like Github Actions leaks fds to child processes
-    # https://github.com/actions/runner/issues/1188
-    - run: ls -l /proc/self/fd
-
-# Build and test in Ubuntu VM provided by Github CI
-    - uses: actions/checkout@v2
-      with:
-        fetch-depth: 0 # Make "git describe" work
-    - run: sudo apt-get install -qq pandoc cppcheck
-    - run: make
-    - run: make test
-    - run: git clean -dxff
-
-# And also build in a number of docker containers of older
-# distributions
-    - name: Build and test in Debian Bullseye
-      uses: addnab/docker-run-action@v3
-      with:
-        image: debian:bullseye
-        options: -v ${{ github.workspace }}:/work
+      - name: Set platform-specific env
         run: |
-          set -ex
-          apt-get -qq update > /dev/null < /dev/null
-          apt-get -qq install make gcc golang git ca-certificates > /dev/null < /dev/null
-          cd /work
-          make
-          make test
-    - run: git clean -dxff
+          echo "ARCH=${{ matrix.arch }}" >> $GITHUB_ENV
+          echo "TARGET=earlyoom-linux-${{ matrix.arch }}" >> $GITHUB_ENV
+          echo "VERSION=v999-dev-$(git describe --tags --dirty --always || echo vdev)" >> $GITHUB_ENV
 
-    - name: Build and test in Amazon Linux 2
-      uses: addnab/docker-run-action@v3
-      with:
-        image: amazonlinux:2
-        options: -v ${{ github.workspace }}:/work
-        run: |
-          set -ex
-          yum -y -q install make gcc golang git
-          cd /work
-          git config --global --add safe.directory /work # Fix for: fatal: detected dubious ownership in repository at '/work'
-          make
-          make test
-    - run: git clean -dxff
+      - name: Set up QEMU (for ARM builds)
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: all
 
-    - name: Build in Oracle Linux 7 (similar to RHEL 7, CentOS 7)
-      uses: addnab/docker-run-action@v3
-      with:
-        image: oraclelinux:7
-        options: -v ${{ github.workspace }}:/work
-        run: |
-          set -ex
-          yum -y -q install make gcc git
-          cd /work
-          make
-    - run: git clean -dxff
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-    - name: Build in Oracle Linux 8 (similar to RHEL 8, CentOS 8)
-      uses: addnab/docker-run-action@v3
-      with:
-        image: oraclelinux:8
-        options: -v ${{ github.workspace }}:/work
+      - name: Build binaries inside containers
         run: |
-          set -ex
-          dnf -y -q install make gcc git
-          cd /work
-          make
-    - run: git clean -dxff
+          if [ "${{ matrix.arch }}" = "amd64" ]; then
+            docker run --rm -v $PWD:/work -w /work almalinux:8 \
+              /bin/bash -c "dnf install -y gcc gcc-c++ make git tar gzip && make clean && make"
+          else
+            docker run --rm -v $PWD:/work -w /work ubuntu:18.04 \
+              /bin/bash -c "apt-get update && apt-get install -y build-essential gcc-aarch64-linux-gnu && make clean && make CC=aarch64-linux-gnu-gcc"
+
+          fi
+
+      - name: Package binary
+        run: |
+          mkdir -p $BUILD_DIR/earlyoom-${VERSION}
+          cp earlyoom $BUILD_DIR/earlyoom-${VERSION}/
+          tar czvf $BUILD_DIR/${TARGET}.tar.gz -C $BUILD_DIR earlyoom-${VERSION}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: earlyoom-${{ matrix.arch }}
+          path: ${{ env.BUILD_DIR }}/${{ env.TARGET }}.tar.gz
+
