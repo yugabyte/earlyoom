@@ -72,5 +72,4 @@ jobs:
           gh release create "$TAG_NAME" ${{ env.BUILD_DIR }}/${{ env.TARGET }}.tar.gz \
             --title "$TAG_NAME" \
             --notes "Automated build for $TAG_NAME" \
-            --latest \
-            --clobber
+            --latest 
