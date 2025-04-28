@@ -1,5 +1,6 @@
 name: CI - Build earlyoom for yugabytedb 
 
+
 on:
   push:
     branches:
@@ -11,8 +12,9 @@ on:
 env:
   BUILD_DIR: dist
 
+
 jobs:
-  build:
+  build-and-test:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -82,3 +84,4 @@ jobs:
               --notes "Automated release for $TAG_NAME" \
               --latest
           fi
+

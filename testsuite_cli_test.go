@@ -140,6 +140,14 @@ func TestCli(t *testing.T) {
 		{args: []string{"-s", "12.34"}, code: -1, stderrContains: "swap free <= 12.34%", stdoutContains: memReport},
 		// Use both -m/-M
 		{args: []string{"-m", "10", "-M", mem1percent}, code: -1, stderrContains: "SIGTERM when mem avail <=  1.00%", stdoutContains: memReport},
+		{args: []string{"-l"}, code: 13, stderrContains: "option requires an argument", stdoutEmpty: true},
+		{args: []string{"-l", "aa"}, code: 14, stderrContains: "invalid lower bound for sleep", stdoutEmpty: true},
+		{args: []string{"-l", "-10"}, code: 14, stderrContains: "invalid lower bound for sleep", stdoutEmpty: true},
+		{args: []string{"-L"}, code: 13, stderrContains: "option requires an argument", stdoutEmpty: true},
+		{args: []string{"-L", "aa"}, code: 14, stderrContains: "invalid upper bound for sleep", stdoutEmpty: true},
+		{args: []string{"-L", "-10"}, code: 14, stderrContains: "invalid upper bound for sleep", stdoutEmpty: true},
+		{args: []string{"-l", "2000"}, code: 13, stderrContains: "Upper bound for sleep time", stdoutEmpty: true},
+		{args: []string{"-l", "100", "-L", "99"}, code: 13, stderrContains: "Upper bound for sleep time", stdoutEmpty: true},
 	}
 	if swapTotal > 0 {
 		// Tests that cannot work when there is no swap enabled
