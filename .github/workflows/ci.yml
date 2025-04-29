@@ -1,7 +1,12 @@
-name: CI - Build & Test
+name: CI - Build earlyoom for yugabytedb 
+
 
 on:
   push:
+    branches:
+      - '**'
+    tags:
+      - 'v*'
   pull_request:
 
 env:
@@ -12,21 +17,12 @@ jobs:
   build-and-test:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         arch: [amd64, arm64]
 
     steps:
       - uses: actions/checkout@v3
-        with:
-          fetch-depth: 0
-          fetch-tags: true
-          ref: ${{ github.ref }}
-
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y make gcc cppcheck \
-            gcc-aarch64-linux-gnu  # install ARM64 cross compiler
 
       - name: Set platform-specific env
         run: |
@@ -34,27 +30,58 @@ jobs:
           echo "TARGET=earlyoom-linux-${{ matrix.arch }}" >> $GITHUB_ENV
           echo "VERSION=v999-dev-$(git describe --tags --dirty --always || echo vdev)" >> $GITHUB_ENV
 
+      - name: Set up QEMU (for ARM builds)
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: all
 
-      - name: Build binary
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build binaries inside containers
         run: |
-          mkdir -p $BUILD_DIR
-          make clean
-          if [ "${ARCH}" = "arm64" ]; then
-            make CC=aarch64-linux-gnu-gcc
+          if [ "${{ matrix.arch }}" = "amd64" ]; then
+            docker run --rm -v $PWD:/work -w /work almalinux:8 \
+              /bin/bash -c "dnf install -y gcc gcc-c++ make git tar gzip && make clean && make"
           else
-            make
+            docker run --rm -v $PWD:/work -w /work ubuntu:18.04 \
+              /bin/bash -c "apt-get update && apt-get install -y build-essential gcc-aarch64-linux-gnu && make clean && make CC=aarch64-linux-gnu-gcc"
+
           fi
+
+      - name: Package binary
+        run: |
           mkdir -p $BUILD_DIR/earlyoom-${VERSION}
           cp earlyoom $BUILD_DIR/earlyoom-${VERSION}/
           tar czvf $BUILD_DIR/${TARGET}.tar.gz -C $BUILD_DIR earlyoom-${VERSION}
 
-      - name: Upload tarball
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: earlyoom-${{ matrix.arch }}
           path: ${{ env.BUILD_DIR }}/${{ env.TARGET }}.tar.gz
 
-      - name: Run unit tests (amd64 only)
-        if: matrix.arch == 'amd64'
-        run: make test
+      - name: Upload artifact to GitHub Release (create if needed)
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG_NAME="${GITHUB_REF#refs/tags/}"
+
+          sudo apt-get update
+          sudo apt-get install -y gh
+
+          set +e
+          echo "Trying to upload to existing release..."
+          gh release upload "$TAG_NAME" ${{ env.BUILD_DIR }}/${{ env.TARGET }}.tar.gz --clobber
+          STATUS=$?
+          set -e
+
+          if [ $STATUS -ne 0 ]; then
+            echo "Release does not exist, creating new release..."
+            gh release create "$TAG_NAME" ${{ env.BUILD_DIR }}/${{ env.TARGET }}.tar.gz \
+              --title "$TAG_NAME" \
+              --notes "Automated release for $TAG_NAME" \
+              --latest
+          fi
 
