@@ -7,6 +7,7 @@ import (
 
 // #cgo CFLAGS: -std=gnu99 -DCGO
 // #include "meminfo.h"
+// #include "cgroup.h"
 // #include "kill.h"
 // #include "msg.h"
 // #include "globals.h"
@@ -123,4 +124,53 @@ func parse_proc_pid_stat_buf(buf string) (res bool, out C.pid_stat_t) {
 func parse_proc_pid_stat(pid int) (res bool, out C.pid_stat_t) {
 	res = bool(C.parse_proc_pid_stat(&out, C.int(pid)))
 	return res, out
+}
+
+func cgroupdir_path(str string) string {
+	if str != "" {
+		cstr := C.CString(str)
+		C.cgroupdir_path = cstr
+	}
+	return C.GoString(C.cgroupdir_path)
+}
+
+func cgroup_reset() {
+	C.cgroup_reset()
+	C.cgroup_disabled = C.bool(false)
+	C.cgroup_forced = C.bool(false)
+}
+
+func cgroup_disabled(state bool) {
+	C.cgroup_disabled = C.bool(state)
+}
+
+func cgroup_forced(state bool) {
+	C.cgroup_forced = C.bool(state)
+}
+
+// cgroup_meminfo runs the cgroup lookup on a meminfo_t that is pre-filled
+// with the host-wide values earlyoom would have read from /proc/meminfo.
+func cgroup_meminfo(host meminfoValues) (bool, meminfoValues) {
+	var m C.meminfo_t
+	m.MemTotalKiB = C.longlong(host.MemTotalKiB)
+	m.MemAvailableKiB = C.longlong(host.MemAvailableKiB)
+	m.AnonPagesKiB = C.longlong(host.AnonPagesKiB)
+	m.SwapTotalKiB = C.longlong(host.SwapTotalKiB)
+	m.SwapFreeKiB = C.longlong(host.SwapFreeKiB)
+	res := bool(C.cgroup_meminfo(&m))
+	return res, meminfoValues{
+		MemTotalKiB:     int64(m.MemTotalKiB),
+		MemAvailableKiB: int64(m.MemAvailableKiB),
+		AnonPagesKiB:    int64(m.AnonPagesKiB),
+		SwapTotalKiB:    int64(m.SwapTotalKiB),
+		SwapFreeKiB:     int64(m.SwapFreeKiB),
+	}
+}
+
+func cgroup_verify_victim(pid int, rssKiB int64) {
+	C.cgroup_verify_victim(C.int(pid), C.longlong(rssKiB))
+}
+
+func cgroup_dir() string {
+	return C.GoString(C.cgroup_dir())
 }

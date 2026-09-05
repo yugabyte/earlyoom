@@ -207,6 +207,37 @@ The command-line flag `--prefer` specifies processes to prefer killing;
 likewise, `--avoid` specifies
 processes to avoid killing. See https://github.com/rfjakob/earlyoom/blob/master/MANPAGE.md#--prefer-regex for details.
 
+### Containers and Kubernetes
+
+`/proc/meminfo` reports the memory of the whole machine, also inside a
+container. earlyoom therefore looks for a memory limit on its own cgroup at
+startup and watches that limit instead of the machine when it finds one. Both
+cgroup v1 and cgroup v2 are supported, and the search walks up the hierarchy,
+so a container without a limit of its own is still covered by the limit of its
+pod. earlyoom prints which cgroup it settled on:
+
+```
+watching cgroup /sys/fs/cgroup/kubepods.slice/kubepods-podabc.slice/cri-containerd-def.scope
+mem total:  2048 MiB, user mem total:  2011 MiB, swap total:     0 MiB
+```
+
+Nothing changes when no cgroup limits earlyoom - a plain system daemon keeps
+watching `/proc/meminfo` as before. Use `--no-cgroup` to turn the lookup off.
+
+Run earlyoom *inside the container* it should protect: it can only kill
+processes it sees in `/proc`, and killing a process elsewhere would not free
+any memory under your limit. earlyoom checks this at startup by comparing the
+limit against the process it would kill, so an earlyoom started with
+`hostPID: true` - which sees the whole node but lives in a small cgroup of its
+own - drops the limit with a warning and keeps watching the node. Pass
+`--cgroup` to use the limit anyway.
+
+`--sort-by-rss` is usually the better victim selection inside a container,
+because the kernel computes `oom_score` relative to the memory of the whole
+machine.
+
+See the [man page](MANPAGE.md#containers) for the details.
+
 Configuration file
 ------------------
 
@@ -229,6 +260,8 @@ Command line options
 earlyoom v1.8
 Usage: ./earlyoom [OPTION]...
 
+  -l MIN_SLEEP_MS           lower bound for the time to sleep between checks
+  -L MAX_SLEEP_M            upper bound for the time to sleep between checks
   -m PERCENT[,KILL_PERCENT] set available memory minimum to PERCENT of total
                             (default 10 %).
                             earlyoom sends SIGTERM once below PERCENT, then
@@ -253,10 +286,13 @@ Usage: ./earlyoom [OPTION]...
   --prefer REGEX            prefer to kill processes matching REGEX
   --avoid REGEX             avoid killing processes matching REGEX
   --ignore REGEX            ignore processes matching REGEX
+  --cgroup                  use the memory limit of our own cgroup even if it
+                            does not cover the processes in /proc
+  --no-cgroup               ignore cgroup memory limits, always look at the
+                            memory of the whole machine
   --dryrun                  dry run (do not kill any processes)
   --syslog                  use syslog instead of std streams
   -h, --help                this help text
-
 ```
 
 See the [man page](MANPAGE.md) for details.

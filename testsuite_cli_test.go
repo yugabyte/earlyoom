@@ -108,6 +108,9 @@ func TestCli(t *testing.T) {
 		{args: []string{"--ignore-root-user"}, code: -1, stderrContains: "Processes owned by root will not be killed", stdoutContains: memReport},
 		{args: []string{"--sort-by-rss"}, code: -1, stderrContains: "Find process with the largest rss", stdoutContains: memReport},
 		{args: []string{"-i"}, code: -1, stderrContains: "Option -i is ignored"},
+		// The cgroup flags must be accepted and must not break the startup
+		{args: []string{"--no-cgroup"}, code: -1, stderrContains: startupMsg, stdoutContains: memReport},
+		{args: []string{"--cgroup"}, code: -1, stderrContains: startupMsg, stdoutContains: memReport},
 		// Extra arguments should error out
 		{args: []string{"xyz"}, code: 13, stderrContains: "extra argument not understood", stdoutEmpty: true},
 		{args: []string{"-i", "1"}, code: 13, stderrContains: "extra argument not understood", stdoutEmpty: true},

@@ -16,6 +16,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "cgroup.h"
 #include "globals.h"
 #include "kill.h"
 #include "meminfo.h"
@@ -43,6 +44,8 @@ enum {
     LONG_OPT_IGNORE_ROOT,
     LONG_OPT_USE_SYSLOG,
     LONG_OPT_SORT_BY_RSS,
+    LONG_OPT_NO_CGROUP,
+    LONG_OPT_CGROUP,
 };
 
 static int set_oom_score_adj(int);
@@ -146,6 +149,18 @@ int main(int argc, char* argv[])
     prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0);
 #endif
 
+    /* getopt_long() runs below, but parse_meminfo() already looks at our
+     * cgroup, so peek at the two flags that affect it beforehand. */
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--no-cgroup") == 0) {
+            cgroup_disabled = true;
+        } else if (strcmp(argv[i], "--cgroup") == 0) {
+            cgroup_forced = true;
+        } else if (strcmp(argv[i], "-d") == 0 || strcmp(argv[i], "--debug") == 0) {
+            enable_debug = 1;
+        }
+    }
+
     meminfo_t m = parse_meminfo();
 
     int c;
@@ -158,6 +173,8 @@ int main(int argc, char* argv[])
         { "ignore-root-user", no_argument, NULL, LONG_OPT_IGNORE_ROOT },
         { "sort-by-rss", no_argument, NULL, LONG_OPT_SORT_BY_RSS },
         { "syslog", no_argument, NULL, LONG_OPT_USE_SYSLOG },
+        { "no-cgroup", no_argument, NULL, LONG_OPT_NO_CGROUP },
+        { "cgroup", no_argument, NULL, LONG_OPT_CGROUP },
         { "help", no_argument, NULL, 'h' },
         { "debug", no_argument, NULL, 'd' },
         { 0, 0, NULL, 0 } /* end-of-array marker */
@@ -179,14 +196,14 @@ int main(int argc, char* argv[])
             if (sleep_ms <= 0) {
                 fatal(14, "-l: invalid lower bound for sleep: '%s'\n", optarg);
             }
-            args.min_sleep_ms = (unsigned) sleep_ms;
+            args.min_sleep_ms = (unsigned)sleep_ms;
             break;
         case 'L':
             sleep_ms = atoi(optarg);
             if (sleep_ms <= 0) {
                 fatal(14, "-L: invalid upper bound for sleep: '%s'\n", optarg);
             }
-            args.max_sleep_ms = (unsigned) sleep_ms;
+            args.max_sleep_ms = (unsigned)sleep_ms;
             break;
         case 'm':
             // Use 99 as upper limit. Passing "-m 100" makes no sense.
@@ -286,6 +303,10 @@ int main(int argc, char* argv[])
         case LONG_OPT_IGNORE:
             ignore_cmds = optarg;
             break;
+        case LONG_OPT_NO_CGROUP:
+        case LONG_OPT_CGROUP:
+            // Already handled in the pre-scan above
+            break;
         case 'h':
             fprintf(stderr,
                 "Usage: %s [OPTION]...\n"
@@ -316,6 +337,10 @@ int main(int argc, char* argv[])
                 "  --prefer REGEX            prefer to kill processes matching REGEX\n"
                 "  --avoid REGEX             avoid killing processes matching REGEX\n"
                 "  --ignore REGEX            ignore processes matching REGEX\n"
+                "  --cgroup                  use the memory limit of our own cgroup even if it\n"
+                "                            does not cover the processes in /proc\n"
+                "  --no-cgroup               ignore cgroup memory limits, always look at the\n"
+                "                            memory of the whole machine\n"
                 "  --dryrun                  dry run (do not kill any processes)\n"
                 "  --syslog                  use syslog instead of std streams\n"
                 "  -h, --help                this help text\n",
@@ -399,7 +424,21 @@ int main(int argc, char* argv[])
         }
     }
 
+    // A cgroup limit is only useful if it covers the processes we could kill.
+    // Checking that needs find_largest_process(), so it cannot happen inside
+    // the parse_meminfo() above, and it has to run after the regexes are set
+    // up so we look at the same candidate the poll loop would pick.
+    if (cgroup_dir() != NULL) {
+        procinfo_t candidate = find_largest_process(&args);
+        cgroup_verify_victim(candidate.pid, candidate.VmRSSkiB);
+        // The check may have turned cgroup mode off again
+        m = parse_meminfo();
+    }
+
     // Print memory limits
+    if (cgroup_dir() != NULL) {
+        fprintf(stderr, "watching cgroup %s\n", cgroup_dir());
+    }
     fprintf(stderr, "mem total: %4lld MiB, user mem total: %4lld MiB, swap total: %4lld MiB\n",
         m.MemTotalKiB / 1024, m.UserMemTotalKiB / 1024, m.SwapTotalKiB / 1024);
     fprintf(stderr, "sending SIGTERM when mem avail <= " PRIPCT " and swap free <= " PRIPCT ",\n",
