@@ -223,9 +223,13 @@ anything, while the kubelet OOM-kills the pod at 2 GiB.
 To avoid that, **earlyoom** looks for a memory limit on its own cgroup at
 startup and, if it finds one, watches that limit instead of the machine.
 Both cgroup v1 (`memory.limit_in_bytes`) and cgroup v2 (`memory.max`) are
-supported, and the search walks up the hierarchy, so a container without a
-limit of its own is still covered by the limit of its pod. The tightest limit
-wins. The startup message
+supported. Where the parent cgroups are visible the search walks up and the
+tightest limit wins, so a container without a limit of its own is still
+covered by the limit of its pod. Note that containers normally run in a
+cgroup namespace, where `/sys/fs/cgroup` *is* the container's own cgroup and
+everything above it is outside the mount: there **earlyoom** can only see the
+container's own limit, and a container limited solely by its pod falls back to
+the host-wide values. The startup message
 
 	watching cgroup /sys/fs/cgroup/kubepods.slice/...
 
@@ -234,9 +238,14 @@ the kubelet does it, as the limit minus the working set (`memory.current` minus
 the reclaimable page cache in `inactive_file`).
 
 When no cgroup limits **earlyoom**, or when the limit is larger than the
-machine, the host-wide values from `/proc/meminfo` are used as before. This
-means that nothing changes for the common case of running **earlyoom** as a
-system daemon.
+machine, the host-wide values from `/proc/meminfo` are used as before.
+
+A cgroup that holds no process but **earlyoom** itself is skipped as well. Such
+a limit governs nothing that **earlyoom** could kill, and watching it would mean
+watching our own idle memory while the machine fills up around us. This is the
+usual shape of a systemd unit with `MemoryMax=`, including the `earlyoom.service`
+shipped with this program, so running **earlyoom** as a system daemon behaves
+exactly as it did before.
 
 **earlyoom** can only kill processes it can see in `/proc`, and killing a
 process only frees memory in the cgroup that process belongs to. At startup it

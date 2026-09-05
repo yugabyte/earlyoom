@@ -212,9 +212,11 @@ processes to avoid killing. See https://github.com/rfjakob/earlyoom/blob/master/
 `/proc/meminfo` reports the memory of the whole machine, also inside a
 container. earlyoom therefore looks for a memory limit on its own cgroup at
 startup and watches that limit instead of the machine when it finds one. Both
-cgroup v1 and cgroup v2 are supported, and the search walks up the hierarchy,
-so a container without a limit of its own is still covered by the limit of its
-pod. earlyoom prints which cgroup it settled on:
+cgroup v1 and cgroup v2 are supported. Where the parent cgroups are visible the
+search walks up and the tightest limit wins, so a container without a limit of
+its own is still covered by the limit of its pod; inside a cgroup namespace,
+which is how containers normally run, only the container's own limit is
+reachable. earlyoom prints which cgroup it settled on:
 
 ```
 watching cgroup /sys/fs/cgroup/kubepods.slice/kubepods-podabc.slice/cri-containerd-def.scope
@@ -222,7 +224,10 @@ mem total:  2048 MiB, user mem total:  2011 MiB, swap total:     0 MiB
 ```
 
 Nothing changes when no cgroup limits earlyoom - a plain system daemon keeps
-watching `/proc/meminfo` as before. Use `--no-cgroup` to turn the lookup off.
+watching `/proc/meminfo` as before. That includes the `earlyoom.service` shipped
+here, which sets `MemoryMax=50M`: a cgroup holding no process but earlyoom
+itself governs nothing earlyoom could kill, so it is skipped. Use `--no-cgroup`
+to turn the lookup off entirely.
 
 Run earlyoom *inside the container* it should protect: it can only kill
 processes it sees in `/proc`, and killing a process elsewhere would not free

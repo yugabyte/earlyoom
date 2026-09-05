@@ -1,6 +1,7 @@
 package earlyoom_testsuite
 
 import (
+	"fmt"
 	"os"
 	"testing"
 )
@@ -475,5 +476,92 @@ func TestCgroupUsageAboveLimit(t *testing.T) {
 	_, m := cgroup_meminfo(hostMeminfo)
 	if m.MemAvailableKiB != 0 {
 		t.Errorf("MemAvailableKiB = %d, want 0", m.MemAvailableKiB)
+	}
+}
+
+// A systemd unit with MemoryMax= - the earlyoom.service shipped with this
+// program sets 50M - puts earlyoom alone in a small cgroup. That limit
+// governs nothing earlyoom could kill, so it must not be adopted at all:
+// not with a warning, not silently. Running as a system daemon has to look
+// exactly like it did before.
+func TestCgroupSelfOnlyCgroupIsSkipped(t *testing.T) {
+	mockCgroup(t, mockCgroupOpts{
+		v2:   true,
+		self: "/system.slice/earlyoom.service",
+		files: map[string]string{
+			"system.slice/earlyoom.service/memory.max":     "52428800\n", // 50 MiB
+			"system.slice/earlyoom.service/memory.current": "1048576\n",
+			"system.slice/earlyoom.service/memory.stat":    "anon 1048576\ninactive_file 0\n",
+			// Only our own pid lives here
+			"system.slice/earlyoom.service/cgroup.procs": fmt.Sprintf("%d\n", os.Getpid()),
+			"system.slice/memory.max":                    "max\n",
+			"memory.max":                                 "max\n",
+		},
+	})
+
+	changed, m := cgroup_meminfo(hostMeminfo)
+	if changed {
+		t.Error("a cgroup holding only earlyoom must not be adopted")
+	}
+	if m != hostMeminfo {
+		t.Errorf("meminfo was modified: %+v", m)
+	}
+	if cgroup_dir() != "" {
+		t.Errorf("cgroup_dir() = %q, want empty", cgroup_dir())
+	}
+}
+
+// The same cgroup, but with a workload in it, is a real limit.
+func TestCgroupWithOtherProcessesIsUsed(t *testing.T) {
+	mockCgroup(t, mockCgroupOpts{
+		v2: true,
+		files: map[string]string{
+			"memory.max":     "52428800\n",
+			"memory.current": "1048576\n",
+			"memory.stat":    "anon 1048576\ninactive_file 0\n",
+			"cgroup.procs":   fmt.Sprintf("%d\n%d\n", os.Getpid(), os.Getpid()+1),
+		},
+	})
+
+	if changed, _ := cgroup_meminfo(hostMeminfo); !changed {
+		t.Error("a cgroup with someone else in it is a real limit")
+	}
+}
+
+// An unreadable cgroup.procs must not silently discard the limit.
+func TestCgroupProcsUnreadable(t *testing.T) {
+	mockCgroup(t, mockCgroupOpts{
+		v2: true,
+		files: map[string]string{
+			"memory.max":     "52428800\n",
+			"memory.current": "1048576\n",
+			"memory.stat":    "anon 1048576\ninactive_file 0\n",
+			// no cgroup.procs at all
+		},
+	})
+
+	if changed, _ := cgroup_meminfo(hostMeminfo); !changed {
+		t.Error("when in doubt the limit must be kept")
+	}
+}
+
+// Documents a real limitation rather than a behaviour: inside a cgroup
+// namespace our own cgroup is the root of the mount, so a pod-level limit
+// above it is not reachable and we fall back to the host values. Every other
+// walk-up test uses the non-namespaced layout, where the parents are visible.
+func TestCgroupNamespacedCannotReachPodLimit(t *testing.T) {
+	mockCgroup(t, mockCgroupOpts{
+		v2:   true,
+		self: "/", // namespaced: /sys/fs/cgroup is our own cgroup
+		files: map[string]string{
+			"memory.max":     "max\n", // the container itself is unlimited
+			"memory.current": "10485760\n",
+			"memory.stat":    "anon 10485760\ninactive_file 0\n",
+			"cgroup.procs":   fmt.Sprintf("%d\n%d\n", os.Getpid(), os.Getpid()+1),
+		},
+	})
+
+	if changed, _ := cgroup_meminfo(hostMeminfo); changed {
+		t.Error("nothing above the namespace root is visible, so no limit is found")
 	}
 }

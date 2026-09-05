@@ -55,6 +55,8 @@ static struct {
     char dir[CGROUP_PATH_LEN];
     /* Its limit, as found by probe() */
     long long limit_kib;
+    /* Has cgroup_verify_victim() vetted this cg.dir yet? */
+    bool verified;
 } cg;
 
 /* Concatenate `a`, `b` and `c` into `out`. Returns false if the result did
@@ -167,6 +169,46 @@ static const char* limit_file(void)
 static const char* usage_file(void)
 {
     return cg.v2 ? "memory.current" : "memory.usage_in_bytes";
+}
+
+/* Does `dir` hold any process other than earlyoom itself?
+ *
+ * systemd units routinely carry a MemoryMax= of their own - the unit file
+ * shipped with earlyoom sets 50M - and such a limit governs nothing but
+ * earlyoom. Watching it would mean watching our own idle memory forever
+ * while the machine fills up around us, so a cgroup we are alone in is not
+ * a limit worth having.
+ *
+ * Returns true when in doubt, so an unreadable cgroup.procs keeps the limit
+ * rather than silently discarding it. */
+static bool has_other_processes(const char* dir)
+{
+    char path[CGROUP_PATH_LEN] = { 0 };
+    char buf[4096] = { 0 };
+
+    if (!join_path(path, sizeof(path), dir, "/cgroup.procs", "")) {
+        return true;
+    }
+    int res = read_file(path, buf, sizeof(buf));
+    if (res < 0) {
+        debug("%s: could not read %s: %s\n", __func__, path, strerror(-res));
+        return true;
+    }
+    long long me = (long long)getpid();
+    for (const char* line = buf; line != NULL && *line != 0;) {
+        errno = 0;
+        char* end = NULL;
+        long long pid = strtoll(line, &end, 10);
+        if (end != line && errno == 0 && pid > 0 && pid != me) {
+            return true;
+        }
+        line = strchr(line, '\n');
+        if (line != NULL) {
+            line++;
+        }
+    }
+    debug("%s: %s holds no process but ourselves\n", __func__, dir);
+    return false;
 }
 
 /* Read the memory limit of `dir`, in KiB.
@@ -334,6 +376,7 @@ static bool find_binding_dir(long long host_total_kib)
         /* v1 stores "unlimited" as a huge number instead of "max", and a
          * limit above the size of the machine can never bite either. */
         if (limit_kib >= 0 && limit_kib < host_total_kib && limit_kib < best_kib
+            && has_other_processes(leaf)
             && join_path(cg.dir, sizeof(cg.dir), leaf, "", "")) {
             best_kib = limit_kib;
         }
@@ -408,7 +451,7 @@ void cgroup_verify_victim(int pid, long long rss_kib)
     char pidstr[16] = { 0 };
     char victim[CGROUP_PATH_LEN] = { 0 };
 
-    if (cg.state != CGROUP_ACTIVE || cgroup_forced) {
+    if (cg.state != CGROUP_ACTIVE || cgroup_forced || cg.verified) {
         return;
     }
     if (pid <= 0) {
@@ -427,6 +470,7 @@ void cgroup_verify_victim(int pid, long long rss_kib)
     }
     if (below_our_cgroup(victim)) {
         debug("%s: pid %d is in %s, covered by our limit\n", __func__, pid, victim);
+        cg.verified = true;
         return;
     }
     cg.state = CGROUP_INACTIVE;
@@ -448,6 +492,7 @@ static void probe(long long host_total_kib)
         return;
     }
     cg.state = CGROUP_ACTIVE;
+    cg.verified = false;
     cg.limit_kib = read_limit_kib(cg.dir);
     debug("%s: using the cgroup v%d memory limit of %s\n", __func__, cg.v2 ? 2 : 1, cg.dir);
 }

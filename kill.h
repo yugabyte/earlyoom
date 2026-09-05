@@ -9,11 +9,32 @@
 
 typedef struct {
     /* if the available memory AND swap goes below these percentages,
-     * we start killing processes */
+     * we start killing processes. Derived from the options below by
+     * derive_thresholds(), which has to run again whenever the memory
+     * totals change - a cgroup limit can appear, disappear or be resized
+     * while we are running. */
     double mem_term_percent;
     double mem_kill_percent;
     double swap_term_percent;
     double swap_kill_percent;
+    /* Percentages as passed to -m/-s */
+    double opt_mem_term_percent;
+    double opt_mem_kill_percent;
+    double opt_swap_term_percent;
+    double opt_swap_kill_percent;
+    /* Absolute sizes as passed to -M/-S, in KiB. Only used when the
+     * matching have_* flag is set. */
+    double opt_mem_term_kib;
+    double opt_mem_kill_kib;
+    double opt_swap_term_kib;
+    double opt_swap_kill_kib;
+    bool have_m;
+    bool have_M;
+    bool have_s;
+    bool have_S;
+    /* The totals opt_*_kib were last converted against */
+    long long derived_mem_total_kib;
+    long long derived_swap_total_kib;
     /* send d-bus notifications? */
     bool notify;
     /* Path to script for programmatic notifications (or NULL) */

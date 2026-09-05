@@ -3,9 +3,11 @@ package earlyoom_testsuite
 import (
 	"fmt"
 	"strings"
+	"unsafe"
 )
 
 // #cgo CFLAGS: -std=gnu99 -DCGO
+// #include <stdlib.h>
 // #include "meminfo.h"
 // #include "cgroup.h"
 // #include "kill.h"
@@ -126,10 +128,17 @@ func parse_proc_pid_stat(pid int) (res bool, out C.pid_stat_t) {
 	return res, out
 }
 
+// The initial value of C.cgroupdir_path is a string literal, so only
+// pointers we allocated ourselves may be freed. Track the last one.
+var cgroupdirAlloc *C.char
+
 func cgroupdir_path(str string) string {
 	if str != "" {
-		cstr := C.CString(str)
-		C.cgroupdir_path = cstr
+		if cgroupdirAlloc != nil {
+			C.free(unsafe.Pointer(cgroupdirAlloc))
+		}
+		cgroupdirAlloc = C.CString(str)
+		C.cgroupdir_path = cgroupdirAlloc
 	}
 	return C.GoString(C.cgroupdir_path)
 }
