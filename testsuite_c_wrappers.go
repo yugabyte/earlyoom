@@ -109,10 +109,17 @@ func get_cmdline(pid int) (int, string) {
 	return int(res), C.GoString(cstr)
 }
 
+// Same as cgroupdir_path below: the initial value is a string literal, so
+// only pointers we allocated ourselves may be freed.
+var procdirAlloc *C.char
+
 func procdir_path(str string) string {
 	if str != "" {
-		cstr := C.CString(str)
-		C.procdir_path = cstr
+		if procdirAlloc != nil {
+			C.free(unsafe.Pointer(procdirAlloc))
+		}
+		procdirAlloc = C.CString(str)
+		C.procdir_path = procdirAlloc
 	}
 	return C.GoString(C.procdir_path)
 }
