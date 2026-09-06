@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"syscall"
 	"testing"
 	"time"
@@ -57,21 +58,26 @@ func runEarlyoom(t *testing.T, args ...string) exitVals {
 			expectMemReport = false
 		}
 	}
+	err = cmd.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Arm the timeout only now that cmd.Process exists. Reading it from the
+	// timer goroutine while Start() writes it is a data race, and a timer
+	// that fired before Start() returned would dereference a nil Process.
+	// Hold the handle in a local so the callback never touches cmd.
+	proc := cmd.Process
 	var timer *time.Timer
 	if expectMemReport {
 		timer = time.AfterFunc(10*time.Second, func() {
 			t.Error("timeout")
-			cmd.Process.Kill()
+			proc.Kill()
 		})
 	} else {
 		timer = time.AfterFunc(100*time.Millisecond, func() {
-			cmd.Process.Kill()
+			proc.Kill()
 		})
-	}
-
-	err = cmd.Start()
-	if err != nil {
-		t.Fatal(err)
 	}
 
 	// Read until the first status line, looks like this:
@@ -87,13 +93,13 @@ func runEarlyoom(t *testing.T, args ...string) exitVals {
 	}
 	timer.Stop()
 
-	stat, err := linuxproc.ReadProcessStat(fmt.Sprintf("/proc/%d/stat", cmd.Process.Pid))
+	stat, err := linuxproc.ReadProcessStat(fmt.Sprintf("/proc/%d/stat", proc.Pid))
 	if err != nil {
 		panic(err)
 	}
 	rss := int(stat.Rss)
-	fds := countFds(cmd.Process.Pid)
-	cmd.Process.Kill()
+	fds := countFds(proc.Pid)
+	proc.Kill()
 	err = cmd.Wait()
 
 	return exitVals{
@@ -228,5 +234,101 @@ func mockProc(t *testing.T, procs []mockProcProcess) {
 		if err := ioutil.WriteFile(pidDir+"/cmdline", []byte("foo\000-bar\000-baz"), 0444); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// meminfoValues holds the meminfo_t fields that cgroup_meminfo() looks at
+// or overwrites.
+type meminfoValues struct {
+	MemTotalKiB     int64
+	MemAvailableKiB int64
+	AnonPagesKiB    int64
+	SwapTotalKiB    int64
+	SwapFreeKiB     int64
+}
+
+type mockCgroupOpts struct {
+	// Use the cgroup v2 layout instead of v1
+	v2 bool
+	// Content of the cgroup path field in /proc/self/cgroup. Defaults to "/".
+	self string
+	// Extra /proc/[pid]/cgroup files to create, keyed by pid.
+	// Example: {"42": "/../other.scope"}
+	procs map[string]string
+	// Files to create below the root of the memory hierarchy, which is
+	// <mount>/memory on v1 and <mount> on v2.
+	// Example: {"pod/ctr/memory.max": "2147483648"}
+	files map[string]string
+}
+
+// mockCgroup creates a fake cgroup filesystem plus the matching
+// /proc/[pid]/cgroup files, and points earlyoom at both. It returns the
+// temporary directory that holds them.
+func mockCgroup(t *testing.T, o mockCgroupOpts) string {
+	t.Helper()
+	cgroup_reset()
+
+	root, err := ioutil.TempDir("", t.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mount := root + "/cgroup"
+	base := mount
+	if !o.v2 {
+		base = mount + "/memory"
+	}
+	if err := os.MkdirAll(base, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if o.v2 {
+		// The marker that tells us this is a unified hierarchy
+		writeMockFile(t, mount+"/cgroup.controllers", "cpu memory pids\n")
+	} else {
+		// The root of a v1 memory hierarchy always has a limit file
+		if _, ok := o.files["memory.limit_in_bytes"]; !ok {
+			writeMockFile(t, base+"/memory.limit_in_bytes", "9223372036854771712\n")
+		}
+	}
+	for name, content := range o.files {
+		writeMockFile(t, base+"/"+name, content)
+	}
+
+	// /proc/self/cgroup and any /proc/[pid]/cgroup the test asked for
+	procdir := root + "/proc"
+	if o.self == "" {
+		o.self = "/"
+	}
+	procs := map[string]string{"self": o.self}
+	for pid, path := range o.procs {
+		procs[pid] = path
+	}
+	for pid, path := range procs {
+		var content string
+		if o.v2 {
+			content = fmt.Sprintf("0::%s\n", path)
+		} else {
+			content = fmt.Sprintf("5:cpu,cpuacct:/\n3:memory:%s\n1:name=systemd:/\n", path)
+		}
+		writeMockFile(t, fmt.Sprintf("%s/%s/cgroup", procdir, pid), content)
+	}
+
+	procdir_path(procdir)
+	cgroupdir_path(mount)
+	t.Cleanup(func() {
+		cgroup_reset()
+		procdir_path("/proc")
+		cgroupdir_path("/sys/fs/cgroup")
+		os.RemoveAll(root)
+	})
+	return root
+}
+
+func writeMockFile(t *testing.T, path string, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := ioutil.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
 	}
 }

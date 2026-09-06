@@ -12,6 +12,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "cgroup.h"
 #include "globals.h"
 #include "meminfo.h"
 #include "msg.h"
@@ -107,6 +108,12 @@ meminfo_t parse_meminfo()
             guesstimate_warned = 1;
         }
     }
+
+    // If we are confined to a cgroup with a memory limit (a container, a
+    // Kubernetes pod, a systemd unit with MemoryMax=), the numbers above
+    // describe the whole machine and not the box we actually live in.
+    // Replace them with the cgroup's own numbers.
+    cgroup_meminfo(&m);
 
     // Calculated values
     m.UserMemTotalKiB = m.MemAvailableKiB + m.AnonPagesKiB;

@@ -188,6 +188,14 @@ processes when earlyoom determines to kill processes.
 ### \-\-sort-by-rss
 find process with the largest rss (default oom_score)
 
+#### \-\-cgroup
+Use the memory limit of **earlyoom**'s own cgroup even when that limit does not
+cover the processes **earlyoom** sees in `/proc` (see CONTAINERS below).
+
+#### \-\-no-cgroup
+Never look at cgroup memory limits. **earlyoom** always watches the memory of
+the whole machine, as reported by `/proc/meminfo`.
+
 #### \-\-dryrun
 dry run (do not kill any processes)
 
@@ -204,6 +212,68 @@ background info.
 
 #### -h, \-\-help
 this help text
+
+# CONTAINERS
+
+`/proc/meminfo` always reports the memory of the whole machine, also inside a
+container. An **earlyoom** running in a Kubernetes pod with a 2 GiB limit would
+therefore happily watch the 64 GiB of the node it runs on and never do
+anything, while the kubelet OOM-kills the pod at 2 GiB.
+
+To avoid that, **earlyoom** looks for a memory limit on its own cgroup at
+startup and, if it finds one, watches that limit instead of the machine.
+Both cgroup v1 (`memory.limit_in_bytes`) and cgroup v2 (`memory.max`) are
+supported. Where the parent cgroups are visible the search walks up and the
+tightest limit wins, so a container without a limit of its own is still
+covered by the limit of its pod. Note that containers normally run in a
+cgroup namespace, where `/sys/fs/cgroup` *is* the container's own cgroup and
+everything above it is outside the mount: there **earlyoom** can only see the
+container's own limit, and a container limited solely by its pod falls back to
+the host-wide values. The startup message
+
+	watching cgroup /sys/fs/cgroup/kubepods.slice/...
+
+tells you which cgroup was picked. Available memory is computed the same way
+the kubelet does it, as the limit minus the working set (`memory.current` minus
+the reclaimable page cache in `inactive_file`).
+
+When no cgroup limits **earlyoom**, or when the limit is larger than the
+machine, the host-wide values from `/proc/meminfo` are used as before.
+
+A cgroup that holds no process but **earlyoom** itself is skipped as well. Such
+a limit governs nothing that **earlyoom** could kill, and watching it would mean
+watching our own idle memory while the machine fills up around us. This is the
+usual shape of a systemd unit with `MemoryMax=`, including the `earlyoom.service`
+shipped with this program, so running **earlyoom** as a system daemon behaves
+exactly as it did before.
+
+**earlyoom** can only kill processes it can see in `/proc`, and killing a
+process only frees memory in the cgroup that process belongs to. At startup it
+therefore checks the limit against the process it would kill right now: if that
+process lives outside the cgroup the limit belongs to, the limit is dropped and
+a warning is printed. This is what happens to an **earlyoom** started with
+`hostPID: true` on a node - it sees the whole node in `/proc` but sits in a
+small cgroup of its own, and the node's memory is what it can actually act on
+there. Pass \-\-cgroup to use the limit anyway, or \-\-no-cgroup to silence the
+warning. On an idle machine every candidate is a few hundred kiB and says
+nothing either way, so the check only judges by a candidate large enough to be
+worth killing.
+
+Two more things are worth knowing when running in a container:
+
+  * Victim selection is limited to the processes in `/proc`, so run
+    **earlyoom** in the container it should protect. A sidecar has a memory
+    limit of its own and the processes it would kill live under a different
+    one, which is exactly the mismatch described above.
+  * The default `oom_score` ranking is computed by the kernel relative to the
+    memory of the whole machine, which makes it coarse inside a small
+    container. \-\-sort-by-rss usually picks better victims there.
+
+Cgroup v1 accounts memory and swap together in `memory.memsw.*`, and only when
+the kernel was booted with `swapaccount=1`. Without it, the host's swap values
+are used. Swap limits that exceed the swap the machine actually has are capped:
+Docker and podman default `memory.memsw.limit_in_bytes` to twice the memory
+limit even on a host without any swap.
 
 # EXIT STATUS
 

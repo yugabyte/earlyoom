@@ -6,4 +6,6 @@ extern int enable_debug;
 
 extern char* procdir_path;
 
+extern char* cgroupdir_path;
+
 #endif

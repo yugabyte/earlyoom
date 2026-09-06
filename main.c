@@ -16,6 +16,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "cgroup.h"
 #include "globals.h"
 #include "kill.h"
 #include "meminfo.h"
@@ -43,10 +44,13 @@ enum {
     LONG_OPT_IGNORE_ROOT,
     LONG_OPT_USE_SYSLOG,
     LONG_OPT_SORT_BY_RSS,
+    LONG_OPT_NO_CGROUP,
+    LONG_OPT_CGROUP,
 };
 
 static int set_oom_score_adj(int);
-static void poll_loop(const poll_loop_args_t* args);
+static void poll_loop(poll_loop_args_t* args);
+static void derive_thresholds(poll_loop_args_t* args, const meminfo_t* m);
 
 // Prevent Golang / Cgo name collision when the test suite runs -
 // Cgo generates it's own main function.
@@ -102,13 +106,57 @@ static void startup_selftests(poll_loop_args_t* args)
 #endif
 }
 
+/* Turn the options into the percentage thresholds the poll loop compares
+ * against. -M/-S are absolute sizes, so they depend on the memory total that
+ * is currently in effect, and that total is not fixed: a cgroup limit can be
+ * dropped when it turns out not to cover what we would kill, and it can be
+ * resized under us when a Kubernetes pod is resized in place. Whenever the
+ * totals move, the percentages have to be derived again - keeping the old
+ * ones would apply thresholds scaled to a small cgroup against the whole
+ * machine, which errs towards killing for no reason.
+ */
+static void derive_thresholds(poll_loop_args_t* args, const meminfo_t* m)
+{
+    args->mem_term_percent = args->opt_mem_term_percent;
+    args->mem_kill_percent = args->opt_mem_kill_percent;
+    args->swap_term_percent = args->opt_swap_term_percent;
+    args->swap_kill_percent = args->opt_swap_kill_percent;
+
+    if (args->have_M && m->MemTotalKiB > 0) {
+        double term = 100 * args->opt_mem_term_kib / (double)m->MemTotalKiB;
+        double kill = 100 * args->opt_mem_kill_kib / (double)m->MemTotalKiB;
+        if (args->have_m) {
+            // Both -m and -M were passed. Use the lower of both values.
+            args->mem_term_percent = min(args->mem_term_percent, term);
+            args->mem_kill_percent = min(args->mem_kill_percent, kill);
+        } else {
+            // Only -M was passed.
+            args->mem_term_percent = term;
+            args->mem_kill_percent = kill;
+        }
+    }
+    if (args->have_S && m->SwapTotalKiB > 0) {
+        double term = 100 * args->opt_swap_term_kib / (double)m->SwapTotalKiB;
+        double kill = 100 * args->opt_swap_kill_kib / (double)m->SwapTotalKiB;
+        if (args->have_s) {
+            args->swap_term_percent = min(args->swap_term_percent, term);
+            args->swap_kill_percent = min(args->swap_kill_percent, kill);
+        } else {
+            args->swap_term_percent = term;
+            args->swap_kill_percent = kill;
+        }
+    }
+    args->derived_mem_total_kib = m->MemTotalKiB;
+    args->derived_swap_total_kib = m->SwapTotalKiB;
+}
+
 int main(int argc, char* argv[])
 {
     poll_loop_args_t args = {
-        .mem_term_percent = 10,
-        .swap_term_percent = 10,
-        .mem_kill_percent = 5,
-        .swap_kill_percent = 5,
+        .opt_mem_term_percent = 10,
+        .opt_swap_term_percent = 10,
+        .opt_mem_kill_percent = 5,
+        .opt_swap_kill_percent = 5,
         .report_interval_ms = 1000,
         .ignore_root_user = false,
         .sort_by_rss = false,
@@ -146,6 +194,21 @@ int main(int argc, char* argv[])
     prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0);
 #endif
 
+    /* parse_meminfo() below already looks at our cgroup, and -d decides
+     * whether that is traced, so peek at the flags that matter before
+     * getopt_long() gets a chance to parse them. getopt_long() also accepts
+     * unambiguous abbreviations, which this exact-match scan misses - the
+     * option cases below set the same globals again for that reason. */
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--no-cgroup") == 0) {
+            cgroup_disabled = true;
+        } else if (strcmp(argv[i], "--cgroup") == 0) {
+            cgroup_forced = true;
+        } else if (strcmp(argv[i], "-d") == 0 || strcmp(argv[i], "--debug") == 0) {
+            enable_debug = 1;
+        }
+    }
+
     meminfo_t m = parse_meminfo();
 
     int c;
@@ -158,12 +221,19 @@ int main(int argc, char* argv[])
         { "ignore-root-user", no_argument, NULL, LONG_OPT_IGNORE_ROOT },
         { "sort-by-rss", no_argument, NULL, LONG_OPT_SORT_BY_RSS },
         { "syslog", no_argument, NULL, LONG_OPT_USE_SYSLOG },
+        { "no-cgroup", no_argument, NULL, LONG_OPT_NO_CGROUP },
+        { "cgroup", no_argument, NULL, LONG_OPT_CGROUP },
         { "help", no_argument, NULL, 'h' },
         { "debug", no_argument, NULL, 'd' },
         { 0, 0, NULL, 0 } /* end-of-array marker */
     };
     bool have_m = 0, have_M = 0, have_s = 0, have_S = 0;
     double mem_term_kib = 0, mem_kill_kib = 0, swap_term_kib = 0, swap_kill_kib = 0;
+    /* -M/-S are validated and converted against the memory total, and which
+     * total is in effect is only settled once the cgroup check below has
+     * run. Keep the arguments and deal with them afterwards. */
+    char* mem_kib_arg = NULL;
+    char* swap_kib_arg = NULL;
 
     while ((c = getopt_long(argc, argv, short_opt, long_opt, NULL)) != -1) {
         float report_interval_f = 0;
@@ -179,14 +249,14 @@ int main(int argc, char* argv[])
             if (sleep_ms <= 0) {
                 fatal(14, "-l: invalid lower bound for sleep: '%s'\n", optarg);
             }
-            args.min_sleep_ms = (unsigned) sleep_ms;
+            args.min_sleep_ms = (unsigned)sleep_ms;
             break;
         case 'L':
             sleep_ms = atoi(optarg);
             if (sleep_ms <= 0) {
                 fatal(14, "-L: invalid upper bound for sleep: '%s'\n", optarg);
             }
-            args.max_sleep_ms = (unsigned) sleep_ms;
+            args.max_sleep_ms = (unsigned)sleep_ms;
             break;
         case 'm':
             // Use 99 as upper limit. Passing "-m 100" makes no sense.
@@ -194,8 +264,8 @@ int main(int argc, char* argv[])
             if (strlen(tuple.err)) {
                 fatal(15, "-m: %s", tuple.err);
             }
-            args.mem_term_percent = tuple.term;
-            args.mem_kill_percent = tuple.kill;
+            args.opt_mem_term_percent = tuple.term;
+            args.opt_mem_kill_percent = tuple.kill;
             have_m = 1;
             break;
         case 's':
@@ -204,31 +274,15 @@ int main(int argc, char* argv[])
             if (strlen(tuple.err)) {
                 fatal(16, "-s: %s", tuple.err);
             }
-            args.swap_term_percent = tuple.term;
-            args.swap_kill_percent = tuple.kill;
+            args.opt_swap_term_percent = tuple.term;
+            args.opt_swap_kill_percent = tuple.kill;
             have_s = 1;
             break;
         case 'M':
-            tuple = parse_term_kill_tuple(optarg, m.MemTotalKiB * 100 / 99);
-            if (strlen(tuple.err)) {
-                fatal(15, "-M: %s", tuple.err);
-            }
-            mem_term_kib = tuple.term;
-            mem_kill_kib = tuple.kill;
-            have_M = 1;
+            mem_kib_arg = optarg;
             break;
         case 'S':
-            tuple = parse_term_kill_tuple(optarg, m.SwapTotalKiB * 100 / 99);
-            if (strlen(tuple.err)) {
-                fatal(16, "-S: %s", tuple.err);
-            }
-            if (m.SwapTotalKiB == 0) {
-                warn("warning: -S: total swap is zero, using default percentages\n");
-                break;
-            }
-            swap_term_kib = tuple.term;
-            swap_kill_kib = tuple.kill;
-            have_S = 1;
+            swap_kib_arg = optarg;
             break;
         case 'k':
             fprintf(stderr, "Option -k is ignored since earlyoom v1.2\n");
@@ -286,6 +340,13 @@ int main(int argc, char* argv[])
         case LONG_OPT_IGNORE:
             ignore_cmds = optarg;
             break;
+        case LONG_OPT_NO_CGROUP:
+            // Also set in the pre-scan above, which misses abbreviations
+            cgroup_disabled = true;
+            break;
+        case LONG_OPT_CGROUP:
+            cgroup_forced = true;
+            break;
         case 'h':
             fprintf(stderr,
                 "Usage: %s [OPTION]...\n"
@@ -316,6 +377,10 @@ int main(int argc, char* argv[])
                 "  --prefer REGEX            prefer to kill processes matching REGEX\n"
                 "  --avoid REGEX             avoid killing processes matching REGEX\n"
                 "  --ignore REGEX            ignore processes matching REGEX\n"
+                "  --cgroup                  use the memory limit of our own cgroup even if it\n"
+                "                            does not cover the processes in /proc\n"
+                "  --no-cgroup               ignore cgroup memory limits, always look at the\n"
+                "                            memory of the whole machine\n"
                 "  --dryrun                  dry run (do not kill any processes)\n"
                 "  --syslog                  use syslog instead of std streams\n"
                 "  -h, --help                this help text\n",
@@ -334,34 +399,54 @@ int main(int argc, char* argv[])
     if (optind < argc) {
         fatal(13, "extra argument not understood: '%s'\n", argv[optind]);
     }
-    // Merge "-M" with "-m" values
-    if (have_M) {
-        double M_term_percent = 100 * mem_term_kib / (double)m.MemTotalKiB;
-        double M_kill_percent = 100 * mem_kill_kib / (double)m.MemTotalKiB;
-        if (have_m) {
-            // Both -m and -M were passed. Use the lower of both values.
-            args.mem_term_percent = min(args.mem_term_percent, M_term_percent);
-            args.mem_kill_percent = min(args.mem_kill_percent, M_kill_percent);
+
+    /* Settle which memory total we are working with before -M/-S are checked
+     * against it. A cgroup limit is only useful if it covers the processes we
+     * could kill, and finding that out needs find_largest_process(), so it
+     * cannot happen inside parse_meminfo(). The candidate is picked without
+     * the --prefer/--avoid/--ignore regexes, which are about which victim to
+     * favour, not about which cgroup the victims live in. */
+    if (cgroup_dir() != NULL) {
+        poll_loop_args_t probe_args = { 0 };
+        procinfo_t candidate = find_largest_process(&probe_args);
+        cgroup_verify_victim(candidate.pid, candidate.VmRSSkiB);
+    }
+    /* The line above, and --no-cgroup/--cgroup given in an abbreviated form
+     * that the pre-scan missed, can both change the numbers. */
+    m = parse_meminfo();
+
+    if (mem_kib_arg) {
+        term_kill_tuple_t tuple = parse_term_kill_tuple(mem_kib_arg, m.MemTotalKiB * 100 / 99);
+        if (strlen(tuple.err)) {
+            fatal(15, "-M: %s", tuple.err);
+        }
+        mem_term_kib = tuple.term;
+        mem_kill_kib = tuple.kill;
+        have_M = 1;
+    }
+    if (swap_kib_arg) {
+        term_kill_tuple_t tuple = parse_term_kill_tuple(swap_kib_arg, m.SwapTotalKiB * 100 / 99);
+        if (strlen(tuple.err)) {
+            fatal(16, "-S: %s", tuple.err);
+        }
+        if (m.SwapTotalKiB == 0) {
+            warn("warning: -S: total swap is zero, using default percentages\n");
         } else {
-            // Only -M was passed.
-            args.mem_term_percent = M_term_percent;
-            args.mem_kill_percent = M_kill_percent;
+            swap_term_kib = tuple.term;
+            swap_kill_kib = tuple.kill;
+            have_S = 1;
         }
     }
-    // Merge "-S" with "-s" values
-    if (have_S) {
-        double S_term_percent = 100 * swap_term_kib / (double)m.SwapTotalKiB;
-        double S_kill_percent = 100 * swap_kill_kib / (double)m.SwapTotalKiB;
-        if (have_s) {
-            // Both -s and -S were passed. Use the lower of both values.
-            args.swap_term_percent = min(args.swap_term_percent, S_term_percent);
-            args.swap_kill_percent = min(args.swap_kill_percent, S_kill_percent);
-        } else {
-            // Only -S was passed.
-            args.swap_term_percent = S_term_percent;
-            args.swap_kill_percent = S_kill_percent;
-        }
-    }
+    args.opt_mem_term_kib = mem_term_kib;
+    args.opt_mem_kill_kib = mem_kill_kib;
+    args.opt_swap_term_kib = swap_term_kib;
+    args.opt_swap_kill_kib = swap_kill_kib;
+    args.have_m = have_m;
+    args.have_M = have_M;
+    args.have_s = have_s;
+    args.have_S = have_S;
+    derive_thresholds(&args, &m);
+
     if (prefer_cmds) {
         args.prefer_regex = &_prefer_regex;
         if (regcomp(args.prefer_regex, prefer_cmds, REG_EXTENDED | REG_NOSUB) != 0) {
@@ -400,6 +485,9 @@ int main(int argc, char* argv[])
     }
 
     // Print memory limits
+    if (cgroup_dir() != NULL) {
+        fprintf(stderr, "watching cgroup %s\n", cgroup_dir());
+    }
     fprintf(stderr, "mem total: %4lld MiB, user mem total: %4lld MiB, swap total: %4lld MiB\n",
         m.MemTotalKiB / 1024, m.UserMemTotalKiB / 1024, m.SwapTotalKiB / 1024);
     fprintf(stderr, "sending SIGTERM when mem avail <= " PRIPCT " and swap free <= " PRIPCT ",\n",
@@ -496,7 +584,7 @@ static int lowmem_sig(const poll_loop_args_t* args, const meminfo_t* m)
 }
 
 // poll_loop is the main event loop. Never returns.
-static void poll_loop(const poll_loop_args_t* args)
+static void poll_loop(poll_loop_args_t* args)
 {
     // Print a a memory report when this reaches zero. We start at zero so
     // we print the first report immediately.
@@ -504,6 +592,14 @@ static void poll_loop(const poll_loop_args_t* args)
 
     while (1) {
         meminfo_t m = parse_meminfo();
+        /* The cgroup limit can be dropped or resized while we run, which
+         * moves the totals that -M/-S were converted against. */
+        if (m.MemTotalKiB != args->derived_mem_total_kib
+            || m.SwapTotalKiB != args->derived_swap_total_kib) {
+            derive_thresholds(args, &m);
+            warn("memory total changed to %lld MiB, thresholds are now mem " PRIPCT ", swap " PRIPCT "\n",
+                m.MemTotalKiB / 1024, args->mem_term_percent, args->swap_term_percent);
+        }
         int sig = lowmem_sig(args, &m);
         if (sig == SIGKILL) {
             print_mem_stats(warn, m);
@@ -516,6 +612,9 @@ static void poll_loop(const poll_loop_args_t* args)
         }
         if (sig) {
             procinfo_t victim = find_largest_process(args);
+            /* probe() may have chosen a new cgroup since startup; it has to
+             * be checked against a victim just like the first one was. */
+            cgroup_verify_victim(victim.pid, victim.VmRSSkiB);
             /* The run time of find_largest_process is proportional to the number
              * of processes, and takes 2.5ms on my box with a running Gnome desktop (try "make bench").
              * This is long enough that the situation may have changed in the meantime,
