@@ -58,21 +58,26 @@ func runEarlyoom(t *testing.T, args ...string) exitVals {
 			expectMemReport = false
 		}
 	}
+	err = cmd.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Arm the timeout only now that cmd.Process exists. Reading it from the
+	// timer goroutine while Start() writes it is a data race, and a timer
+	// that fired before Start() returned would dereference a nil Process.
+	// Hold the handle in a local so the callback never touches cmd.
+	proc := cmd.Process
 	var timer *time.Timer
 	if expectMemReport {
 		timer = time.AfterFunc(10*time.Second, func() {
 			t.Error("timeout")
-			cmd.Process.Kill()
+			proc.Kill()
 		})
 	} else {
 		timer = time.AfterFunc(100*time.Millisecond, func() {
-			cmd.Process.Kill()
+			proc.Kill()
 		})
-	}
-
-	err = cmd.Start()
-	if err != nil {
-		t.Fatal(err)
 	}
 
 	// Read until the first status line, looks like this:
@@ -88,13 +93,13 @@ func runEarlyoom(t *testing.T, args ...string) exitVals {
 	}
 	timer.Stop()
 
-	stat, err := linuxproc.ReadProcessStat(fmt.Sprintf("/proc/%d/stat", cmd.Process.Pid))
+	stat, err := linuxproc.ReadProcessStat(fmt.Sprintf("/proc/%d/stat", proc.Pid))
 	if err != nil {
 		panic(err)
 	}
 	rss := int(stat.Rss)
-	fds := countFds(cmd.Process.Pid)
-	cmd.Process.Kill()
+	fds := countFds(proc.Pid)
+	proc.Kill()
 	err = cmd.Wait()
 
 	return exitVals{
