@@ -37,6 +37,8 @@ typedef struct {
     unsigned max_sleep_ms;
     /* Flag --dryrun was passed */
     bool dryrun;
+    /* always send SIGKILL; never send SIGTERM first */
+    bool always_sigkill;
 } poll_loop_args_t;
 
 void kill_process(const poll_loop_args_t* args, int sig, const procinfo_t* victim);
