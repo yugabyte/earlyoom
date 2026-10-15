@@ -163,56 +163,30 @@ int main(int argc, char* argv[])
     };
     bool have_m = 0, have_M = 0, have_s = 0, have_S = 0;
     double mem_term_kib = 0, mem_kill_kib = 0, swap_term_kib = 0, swap_kill_kib = 0;
+    /* Saved so the tuples can be parsed after -K is known, whatever the order. */
+    const char* opt_m = NULL;
+    const char* opt_s = NULL;
+    const char* opt_M = NULL;
+    const char* opt_S = NULL;
 
     while ((c = getopt_long(argc, argv, short_opt, long_opt, NULL)) != -1) {
         float report_interval_f = 0;
-        term_kill_tuple_t tuple;
 
         switch (c) {
         case -1: /* no more arguments */
         case 0: /* long option toggles */
             break;
         case 'm':
-            // Use 99 as upper limit. Passing "-m 100" makes no sense.
-            tuple = parse_term_kill_tuple(optarg, 99);
-            if (strlen(tuple.err)) {
-                fatal(15, "-m: %s", tuple.err);
-            }
-            args.mem_term_percent = tuple.term;
-            args.mem_kill_percent = tuple.kill;
-            have_m = 1;
+            opt_m = optarg;
             break;
         case 's':
-            // Using "-s 100" is a valid way to ignore swap usage
-            tuple = parse_term_kill_tuple(optarg, 100);
-            if (strlen(tuple.err)) {
-                fatal(16, "-s: %s", tuple.err);
-            }
-            args.swap_term_percent = tuple.term;
-            args.swap_kill_percent = tuple.kill;
-            have_s = 1;
+            opt_s = optarg;
             break;
         case 'M':
-            tuple = parse_term_kill_tuple(optarg, m.MemTotalKiB * 100 / 99);
-            if (strlen(tuple.err)) {
-                fatal(15, "-M: %s", tuple.err);
-            }
-            mem_term_kib = tuple.term;
-            mem_kill_kib = tuple.kill;
-            have_M = 1;
+            opt_M = optarg;
             break;
         case 'S':
-            tuple = parse_term_kill_tuple(optarg, m.SwapTotalKiB * 100 / 99);
-            if (strlen(tuple.err)) {
-                fatal(16, "-S: %s", tuple.err);
-            }
-            if (m.SwapTotalKiB == 0) {
-                warn("warning: -S: total swap is zero, using default percentages\n");
-                break;
-            }
-            swap_term_kib = tuple.term;
-            swap_kill_kib = tuple.kill;
-            have_S = 1;
+            opt_S = optarg;
             break;
         case 'k':
             fprintf(stderr, "Option -k is ignored since earlyoom v1.2\n");
@@ -316,6 +290,50 @@ int main(int argc, char* argv[])
 
     if (optind < argc) {
         fatal(13, "extra argument not understood: '%s'\n", argv[optind]);
+    }
+    /* Parse limits only after the full command line is known, so -K can
+     * drop the kill half before the term < kill clamp. */
+    if (opt_m) {
+        // Use 99 as upper limit. Passing "-m 100" makes no sense.
+        term_kill_tuple_t tuple = parse_term_kill_tuple(opt_m, 99, args.always_sigkill);
+        if (strlen(tuple.err)) {
+            fatal(15, "-m: %s", tuple.err);
+        }
+        args.mem_term_percent = tuple.term;
+        args.mem_kill_percent = tuple.kill;
+        have_m = 1;
+    }
+    if (opt_s) {
+        // Using "-s 100" is a valid way to ignore swap usage
+        term_kill_tuple_t tuple = parse_term_kill_tuple(opt_s, 100, args.always_sigkill);
+        if (strlen(tuple.err)) {
+            fatal(16, "-s: %s", tuple.err);
+        }
+        args.swap_term_percent = tuple.term;
+        args.swap_kill_percent = tuple.kill;
+        have_s = 1;
+    }
+    if (opt_M) {
+        term_kill_tuple_t tuple = parse_term_kill_tuple(opt_M, m.MemTotalKiB * 100 / 99, args.always_sigkill);
+        if (strlen(tuple.err)) {
+            fatal(15, "-M: %s", tuple.err);
+        }
+        mem_term_kib = tuple.term;
+        mem_kill_kib = tuple.kill;
+        have_M = 1;
+    }
+    if (opt_S) {
+        term_kill_tuple_t tuple = parse_term_kill_tuple(opt_S, m.SwapTotalKiB * 100 / 99, args.always_sigkill);
+        if (strlen(tuple.err)) {
+            fatal(16, "-S: %s", tuple.err);
+        }
+        if (m.SwapTotalKiB == 0) {
+            warn("warning: -S: total swap is zero, using default percentages\n");
+        } else {
+            swap_term_kib = tuple.term;
+            swap_kill_kib = tuple.kill;
+            have_S = 1;
+        }
     }
     // Merge "-M" with "-m" values
     if (have_M) {
