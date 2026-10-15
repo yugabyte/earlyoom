@@ -21,6 +21,8 @@ type cliTestCase struct {
 	stdoutEmpty bool
 	// stderr must contain
 	stderrContains string
+	// stderr must not contain this (empty = no check)
+	stderrExcludes string
 	// stderr must be empty?
 	stderrEmpty bool
 }
@@ -107,6 +109,21 @@ func TestCli(t *testing.T) {
 		{args: []string{"--prefer", "MyProcess2"}, code: -1, stderrContains: "Preferring to kill", stdoutContains: memReport},
 		{args: []string{"--ignore-root-user"}, code: -1, stderrContains: "Processes owned by root will not be killed", stdoutContains: memReport},
 		{args: []string{"--sort-by-rss"}, code: -1, stderrContains: "Find process with the largest rss", stdoutContains: memReport},
+		// -K / --always-sigkill: SIGKILL at the SIGTERM limit; KILL_PERCENT is ignored
+		{args: []string{"-K"}, code: -1, stderrContains: "sending SIGKILL when mem avail <= 10.00% and swap free <= 10.00%", stdoutContains: memReport},
+		{args: []string{"--always-sigkill"}, code: -1, stderrContains: "always sending SIGKILL (no SIGTERM)", stdoutContains: memReport},
+		{args: []string{"-K", "-m", "20,4"}, code: -1, stderrContains: "sending SIGKILL when mem avail <= 20.00%", stdoutContains: memReport},
+		// KILL_PERCENT/KILL_SIZE above PERCENT/SIZE must not raise the SIGKILL limit under -K,
+		// and must not warn. Option order does not matter.
+		{args: []string{"-K", "-m", "10,20"}, code: -1, stderrContains: "sending SIGKILL when mem avail <= 10.00%", stderrExcludes: "setting SIGTERM = SIGKILL", stdoutContains: memReport},
+		{args: []string{"-m", "10,20", "-K"}, code: -1, stderrContains: "sending SIGKILL when mem avail <= 10.00%", stderrExcludes: "setting SIGTERM = SIGKILL", stdoutContains: memReport},
+		{args: []string{"-m", "10,20", "--always-sigkill"}, code: -1, stderrContains: "sending SIGKILL when mem avail <= 10.00%", stderrExcludes: "setting SIGTERM = SIGKILL", stdoutContains: memReport},
+		{args: []string{"-K", "-s", "8,40"}, code: -1, stderrContains: "swap free <=  8.00%", stderrExcludes: "setting SIGTERM = SIGKILL", stdoutContains: memReport},
+		{args: []string{"-s", "8,40", "-K"}, code: -1, stderrContains: "swap free <=  8.00%", stderrExcludes: "setting SIGTERM = SIGKILL", stdoutContains: memReport},
+		{args: []string{"-m", "10,20"}, code: -1, stderrContains: "SIGTERM when mem avail <= 20.00%", stdoutContains: memReport},
+		{args: []string{"-K", "-M", fmt.Sprintf("%d,%d", memTotal*1/100, memTotal*2/100)}, code: -1, stderrContains: "sending SIGKILL when mem avail <=  1.00%", stderrExcludes: "setting SIGTERM = SIGKILL", stdoutContains: memReport},
+		{args: []string{"-M", fmt.Sprintf("%d,%d", memTotal*1/100, memTotal*2/100), "-K"}, code: -1, stderrContains: "sending SIGKILL when mem avail <=  1.00%", stderrExcludes: "setting SIGTERM = SIGKILL", stdoutContains: memReport},
+		{args: []string{"-h"}, code: 0, stderrContains: "--always-sigkill", stdoutEmpty: true},
 		{args: []string{"-i"}, code: -1, stderrContains: "Option -i is ignored"},
 		// Extra arguments should error out
 		{args: []string{"xyz"}, code: 13, stderrContains: "extra argument not understood", stdoutEmpty: true},
@@ -148,6 +165,15 @@ func TestCli(t *testing.T) {
 			// Use both -s/-S
 			{args: []string{"-s", "10", "-S", swap2percent}, code: -1, stderrContains: "swap free <=  1.00%", stdoutContains: memReport},
 		}
+		swap1 := swapTotal * 1 / 100
+		swap3 := swapTotal * 3 / 100
+		if swap1 > 0 && swap3 > swap1 {
+			swapKillAbove := fmt.Sprintf("%d,%d", swap1, swap3)
+			tc = append(tc, []cliTestCase{
+				{args: []string{"-K", "-S", swapKillAbove}, code: -1, stderrContains: "swap free <=  1.00%", stderrExcludes: "setting SIGTERM = SIGKILL", stdoutContains: memReport},
+				{args: []string{"-S", swapKillAbove, "-K"}, code: -1, stderrContains: "swap free <=  1.00%", stderrExcludes: "setting SIGTERM = SIGKILL", stdoutContains: memReport},
+			}...)
+		}
 		testcases = append(testcases, tc...)
 	}
 
@@ -174,6 +200,10 @@ func TestCli(t *testing.T) {
 			}
 			if !strings.Contains(res.stderr, tc.stderrContains) {
 				t.Errorf("stderr should contain %q, but does not", tc.stderrContains)
+				pass = false
+			}
+			if tc.stderrExcludes != "" && strings.Contains(res.stderr, tc.stderrExcludes) {
+				t.Errorf("stderr should not contain %q", tc.stderrExcludes)
 				pass = false
 			}
 			if res.rss > rssMaxKiB {
