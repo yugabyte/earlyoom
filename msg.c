@@ -162,8 +162,9 @@ static double parse_part(term_kill_tuple_t* tuple, const char* part, long long u
 }
 
 // Parse the "term[,kill]" tuple in optarg, examples: "123", "123,456".
-// Guaranteed value range: 0 <= term <= kill <= upper_limit.
-term_kill_tuple_t parse_term_kill_tuple(const char* optarg, long long upper_limit)
+// When ignore_kill is false and term < kill, term is raised to kill.
+// When ignore_kill is true, the kill half is discarded and term is unchanged.
+term_kill_tuple_t parse_term_kill_tuple(const char* optarg, long long upper_limit, bool ignore_kill)
 {
     term_kill_tuple_t tuple = { 0 };
     // writable copy of optarg
@@ -201,8 +202,12 @@ term_kill_tuple_t parse_term_kill_tuple(const char* optarg, long long upper_limi
         // SIGTERM/2.
         tuple.kill = tuple.term / 2;
     }
-    // Setting term < kill makes no sense
-    if (tuple.term < tuple.kill) {
+    if (ignore_kill) {
+        // -K: KILL_PERCENT / KILL_SIZE are not used, so do not raise PERCENT/SIZE
+        // to match them and do not warn about that comparison.
+        tuple.kill = tuple.term;
+    } else if (tuple.term < tuple.kill) {
+        // Setting term < kill makes no sense
         warn("warning: SIGTERM value %.2lf is below SIGKILL value %.2lf, setting SIGTERM = SIGKILL = %.2lf\n",
             tuple.term, tuple.kill, tuple.kill);
         tuple.term = tuple.kill;

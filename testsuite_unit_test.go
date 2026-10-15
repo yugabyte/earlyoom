@@ -21,6 +21,7 @@ func TestParseTuple(t *testing.T) {
 	tcs := []struct {
 		arg        string
 		limit      int
+		ignoreKill bool
 		shouldFail bool
 		term       float64
 		kill       float64
@@ -53,9 +54,15 @@ func TestParseTuple(t *testing.T) {
 		{arg: "1x,2x", limit: 100, shouldFail: true},
 		{arg: "1.1.", limit: 100, shouldFail: true},
 		{arg: "1,2..", limit: 100, shouldFail: true},
+		// -K ignores the kill half, including when it is above the term half.
+		{arg: "10,20", limit: 100, ignoreKill: true, term: 10, kill: 10},
+		{arg: "4,5", limit: 100, ignoreKill: true, term: 4, kill: 4},
+		{arg: "5,9", limit: 100, ignoreKill: true, term: 5, kill: 5},
+		{arg: "0,5", limit: 100, ignoreKill: true, shouldFail: true},
+		{arg: "30", limit: 100, ignoreKill: true, term: 30, kill: 30},
 	}
 	for _, tc := range tcs {
-		err, term, kill := parse_term_kill_tuple(tc.arg, tc.limit)
+		err, term, kill := parse_term_kill_tuple(tc.arg, tc.limit, tc.ignoreKill)
 		hasFailed := (err != nil)
 		if tc.shouldFail != hasFailed {
 			t.Errorf("case %v: hasFailed=%v", tc, hasFailed)
