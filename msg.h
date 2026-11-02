@@ -26,9 +26,12 @@ typedef struct {
     double kill;
 } term_kill_tuple_t;
 
-/* ignore_kill: discard the KILL_PERCENT/KILL_SIZE half and keep the user's
- * PERCENT/SIZE. Used by -K / --always-sigkill. */
-term_kill_tuple_t parse_term_kill_tuple(const char* optarg, long long upper_limit, bool ignore_kill);
+/* ignore_kill: do not parse the KILL_PERCENT/KILL_SIZE half. Keep the user's
+ * PERCENT/SIZE. Used by -K / --always-sigkill.
+ * warn_clamp: when false, term < kill is still clamped but not logged.
+ * main validates every occurrence with warn_clamp true, then parses the
+ * last one again quietly. */
+term_kill_tuple_t parse_term_kill_tuple(const char* optarg, long long upper_limit, bool ignore_kill, bool warn_clamp);
 void fix_truncated_utf8(char* str);
 
 void earlyoom_syslog_init();

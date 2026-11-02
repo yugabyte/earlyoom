@@ -90,6 +90,19 @@ func TestCli(t *testing.T) {
 		{args: []string{"-d"}, code: -1, stdoutContains: "new victim"},
 		{args: []string{"-m", "1"}, code: -1, stderrContains: " 1.00%", stdoutContains: memReport},
 		{args: []string{"-m", "0"}, code: 15, stderrContains: "fatal", stdoutEmpty: true},
+		// An earlier invalid value is fatal even when a later one is valid, and
+		// even when -h/-v would otherwise exit first. Same with -K.
+		{args: []string{"-m", "0", "-m", "10"}, code: 15, stderrContains: "fatal", stdoutEmpty: true},
+		{args: []string{"-m", "100", "-m", "10"}, code: 15, stderrContains: "fatal", stdoutEmpty: true},
+		{args: []string{"-m", "0", "-h"}, code: 15, stderrContains: "fatal", stdoutEmpty: true},
+		{args: []string{"-m", "0", "-v"}, code: 15, stderrContains: "fatal", stdoutEmpty: true},
+		{args: []string{"-K", "-m", "0", "-m", "10"}, code: 15, stderrContains: "fatal", stdoutEmpty: true},
+		{args: []string{"-m", "0", "-K", "-h"}, code: 15, stderrContains: "fatal", stdoutEmpty: true},
+		{args: []string{"-s", "0", "-s", "10"}, code: 16, stderrContains: "fatal", stdoutEmpty: true},
+		{args: []string{"-s", "101", "-h"}, code: 16, stderrContains: "fatal", stdoutEmpty: true},
+		{args: []string{"-M", "-1", "-h"}, code: 15, stderrContains: "fatal", stdoutEmpty: true},
+		{args: []string{"-m", "10", "-m", "20"}, code: -1, stderrContains: "SIGTERM when mem avail <= 20.00%", stdoutContains: memReport},
+		{args: []string{"-K", "-m", "30", "-m", "15"}, code: -1, stderrContains: "sending SIGKILL when mem avail <= 15.00%", stdoutContains: memReport},
 		{args: []string{"-m", "-10"}, code: 15, stderrContains: "fatal", stdoutEmpty: true},
 		// Using "-m 100" makes no sense
 		{args: []string{"-m", "100"}, code: 15, stderrContains: "fatal", stdoutEmpty: true},
@@ -118,6 +131,13 @@ func TestCli(t *testing.T) {
 		{args: []string{"-K", "-m", "10,20"}, code: -1, stderrContains: "sending SIGKILL when mem avail <= 10.00%", stderrExcludes: "setting SIGTERM = SIGKILL", stdoutContains: memReport},
 		{args: []string{"-m", "10,20", "-K"}, code: -1, stderrContains: "sending SIGKILL when mem avail <= 10.00%", stderrExcludes: "setting SIGTERM = SIGKILL", stdoutContains: memReport},
 		{args: []string{"-m", "10,20", "--always-sigkill"}, code: -1, stderrContains: "sending SIGKILL when mem avail <= 10.00%", stderrExcludes: "setting SIGTERM = SIGKILL", stdoutContains: memReport},
+		// Invalid or over-limit kill half is not parsed under -K.
+		{args: []string{"-K", "-m", "10,abc"}, code: -1, stderrContains: "sending SIGKILL when mem avail <= 10.00%", stdoutContains: memReport},
+		{args: []string{"-m", "10,abc", "-K"}, code: -1, stderrContains: "sending SIGKILL when mem avail <= 10.00%", stdoutContains: memReport},
+		{args: []string{"-K", "-m", "10,100"}, code: -1, stderrContains: "sending SIGKILL when mem avail <= 10.00%", stdoutContains: memReport},
+		{args: []string{"-m", "10,abc"}, code: 15, stderrContains: "fatal", stdoutEmpty: true},
+		{args: []string{"-m", "10,abc", "-h"}, code: 15, stderrContains: "fatal", stdoutEmpty: true},
+		{args: []string{"-m", "10,100"}, code: 15, stderrContains: "fatal", stdoutEmpty: true},
 		{args: []string{"-K", "-s", "8,40"}, code: -1, stderrContains: "swap free <=  8.00%", stderrExcludes: "setting SIGTERM = SIGKILL", stdoutContains: memReport},
 		{args: []string{"-s", "8,40", "-K"}, code: -1, stderrContains: "swap free <=  8.00%", stderrExcludes: "setting SIGTERM = SIGKILL", stdoutContains: memReport},
 		{args: []string{"-m", "10,20"}, code: -1, stderrContains: "SIGTERM when mem avail <= 20.00%", stdoutContains: memReport},
