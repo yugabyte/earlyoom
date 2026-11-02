@@ -60,6 +60,11 @@ func TestParseTuple(t *testing.T) {
 		{arg: "5,9", limit: 100, ignoreKill: true, term: 5, kill: 5},
 		{arg: "0,5", limit: 100, ignoreKill: true, shouldFail: true},
 		{arg: "30", limit: 100, ignoreKill: true, term: 30, kill: 30},
+		// Kill half is not parsed, so garbage and values over the limit are ignored.
+		{arg: "10,abc", limit: 100, ignoreKill: true, term: 10, kill: 10},
+		{arg: "10,100", limit: 99, ignoreKill: true, term: 10, kill: 10},
+		{arg: "10,abc", limit: 100, shouldFail: true},
+		{arg: "10,100", limit: 99, shouldFail: true},
 	}
 	for _, tc := range tcs {
 		err, term, kill := parse_term_kill_tuple(tc.arg, tc.limit, tc.ignoreKill)

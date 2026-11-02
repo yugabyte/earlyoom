@@ -31,7 +31,7 @@ func enable_debug(state bool) (oldState bool) {
 
 func parse_term_kill_tuple(optarg string, upper_limit int, ignoreKill bool) (error, float64, float64) {
 	cs := C.CString(optarg)
-	tuple := C.parse_term_kill_tuple(cs, C.longlong(upper_limit), C.bool(ignoreKill))
+	tuple := C.parse_term_kill_tuple(cs, C.longlong(upper_limit), C.bool(ignoreKill), C.bool(true))
 	errmsg := C.GoString(&(tuple.err[0]))
 	if len(errmsg) > 0 {
 		return fmt.Errorf(errmsg), 0, 0

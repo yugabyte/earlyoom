@@ -48,6 +48,65 @@ enum {
 static int set_oom_score_adj(int);
 static void poll_loop(const poll_loop_args_t* args);
 
+/* True when -K / --always-sigkill is present, including after another option.
+ * Mirrors getopt's argument skipping so a value like --prefer -K is not a flag. */
+static bool cmdline_has_always_sigkill(int argc, char* argv[], const char* short_opt, const struct option* long_opt)
+{
+    for (int i = 1; i < argc; i++) {
+        const char* a = argv[i];
+        if (strcmp(a, "--") == 0) {
+            return false;
+        }
+        if (a[0] != '-' || a[1] == '\0') {
+            continue;
+        }
+        if (a[1] == '-') {
+            const char* name = a + 2;
+            const char* eq = strchr(name, '=');
+            size_t nlen = eq ? (size_t)(eq - name) : strlen(name);
+            if (nlen == strlen("always-sigkill") && strncmp(name, "always-sigkill", nlen) == 0) {
+                return true;
+            }
+            for (const struct option* opt = long_opt; opt->name != NULL; opt++) {
+                if (strlen(opt->name) == nlen && strncmp(opt->name, name, nlen) == 0) {
+                    if (opt->has_arg == required_argument && eq == NULL) {
+                        i++;
+                    }
+                    break;
+                }
+            }
+            continue;
+        }
+        for (int j = 1; a[j] != '\0'; j++) {
+            if (a[j] == 'K') {
+                return true;
+            }
+            const char* spec = strchr(short_opt, a[j]);
+            if (spec == NULL) {
+                break;
+            }
+            if (spec[1] == ':') {
+                if (a[j + 1] != '\0') {
+                    break;
+                }
+                i++;
+                break;
+            }
+        }
+    }
+    return false;
+}
+
+/* Reject a bad limit as soon as it is seen. -h/-v and a later repeat of the
+ * same option must not hide an earlier fatal value. */
+static void check_limit_arg(const char* flag, const char* optarg, long long upper_limit, bool ignore_kill, int errcode)
+{
+    term_kill_tuple_t tuple = parse_term_kill_tuple(optarg, upper_limit, ignore_kill, true);
+    if (strlen(tuple.err)) {
+        fatal(errcode, "%s: %s", flag, tuple.err);
+    }
+}
+
 // Prevent Golang / Cgo name collision when the test suite runs -
 // Cgo generates it's own main function.
 #ifdef CGO
@@ -163,11 +222,17 @@ int main(int argc, char* argv[])
     };
     bool have_m = 0, have_M = 0, have_s = 0, have_S = 0;
     double mem_term_kib = 0, mem_kill_kib = 0, swap_term_kib = 0, swap_kill_kib = 0;
-    /* Saved so the tuples can be parsed after -K is known, whatever the order. */
+    /* Saved so the last occurrence can be parsed again after getopt. */
     const char* opt_m = NULL;
     const char* opt_s = NULL;
     const char* opt_M = NULL;
     const char* opt_S = NULL;
+
+    /* Know -K before the first limit, wherever it sits on the command line.
+     * The per-option check then uses the same ignore_kill as the final parse. */
+    if (cmdline_has_always_sigkill(argc, argv, short_opt, long_opt)) {
+        args.always_sigkill = true;
+    }
 
     while ((c = getopt_long(argc, argv, short_opt, long_opt, NULL)) != -1) {
         float report_interval_f = 0;
@@ -177,15 +242,21 @@ int main(int argc, char* argv[])
         case 0: /* long option toggles */
             break;
         case 'm':
+            // Use 99 as upper limit. Passing "-m 100" makes no sense.
+            check_limit_arg("-m", optarg, 99, args.always_sigkill, 15);
             opt_m = optarg;
             break;
         case 's':
+            // Using "-s 100" is a valid way to ignore swap usage
+            check_limit_arg("-s", optarg, 100, args.always_sigkill, 16);
             opt_s = optarg;
             break;
         case 'M':
+            check_limit_arg("-M", optarg, m.MemTotalKiB * 100 / 99, args.always_sigkill, 15);
             opt_M = optarg;
             break;
         case 'S':
+            check_limit_arg("-S", optarg, m.SwapTotalKiB * 100 / 99, args.always_sigkill, 16);
             opt_S = optarg;
             break;
         case 'k':
@@ -291,11 +362,10 @@ int main(int argc, char* argv[])
     if (optind < argc) {
         fatal(13, "extra argument not understood: '%s'\n", argv[optind]);
     }
-    /* Parse limits only after the full command line is known, so -K can
-     * drop the kill half before the term < kill clamp. */
+    /* Last occurrence wins. warn_clamp is false: the in-loop check already
+     * logged any term < kill clamp for this value. */
     if (opt_m) {
-        // Use 99 as upper limit. Passing "-m 100" makes no sense.
-        term_kill_tuple_t tuple = parse_term_kill_tuple(opt_m, 99, args.always_sigkill);
+        term_kill_tuple_t tuple = parse_term_kill_tuple(opt_m, 99, args.always_sigkill, false);
         if (strlen(tuple.err)) {
             fatal(15, "-m: %s", tuple.err);
         }
@@ -304,8 +374,7 @@ int main(int argc, char* argv[])
         have_m = 1;
     }
     if (opt_s) {
-        // Using "-s 100" is a valid way to ignore swap usage
-        term_kill_tuple_t tuple = parse_term_kill_tuple(opt_s, 100, args.always_sigkill);
+        term_kill_tuple_t tuple = parse_term_kill_tuple(opt_s, 100, args.always_sigkill, false);
         if (strlen(tuple.err)) {
             fatal(16, "-s: %s", tuple.err);
         }
@@ -314,7 +383,7 @@ int main(int argc, char* argv[])
         have_s = 1;
     }
     if (opt_M) {
-        term_kill_tuple_t tuple = parse_term_kill_tuple(opt_M, m.MemTotalKiB * 100 / 99, args.always_sigkill);
+        term_kill_tuple_t tuple = parse_term_kill_tuple(opt_M, m.MemTotalKiB * 100 / 99, args.always_sigkill, false);
         if (strlen(tuple.err)) {
             fatal(15, "-M: %s", tuple.err);
         }
@@ -323,7 +392,7 @@ int main(int argc, char* argv[])
         have_M = 1;
     }
     if (opt_S) {
-        term_kill_tuple_t tuple = parse_term_kill_tuple(opt_S, m.SwapTotalKiB * 100 / 99, args.always_sigkill);
+        term_kill_tuple_t tuple = parse_term_kill_tuple(opt_S, m.SwapTotalKiB * 100 / 99, args.always_sigkill, false);
         if (strlen(tuple.err)) {
             fatal(16, "-S: %s", tuple.err);
         }
