@@ -48,53 +48,26 @@ enum {
 static int set_oom_score_adj(int);
 static void poll_loop(const poll_loop_args_t* args);
 
-/* True when -K / --always-sigkill is present, including after another option.
- * Mirrors getopt's argument skipping so a value like --prefer -K is not a flag. */
+/* True when -K / --always-sigkill is present anywhere on the command line.
+ * Runs a quiet getopt_long pre-pass so abbreviations (--always), bundling
+ * (-dK), option arguments (--prefer -K, --pref -K) and "--" are handled
+ * exactly like the real pass. Resets getopt state afterwards. */
 static bool cmdline_has_always_sigkill(int argc, char* argv[], const char* short_opt, const struct option* long_opt)
 {
-    for (int i = 1; i < argc; i++) {
-        const char* a = argv[i];
-        if (strcmp(a, "--") == 0) {
-            return false;
-        }
-        if (a[0] != '-' || a[1] == '\0') {
-            continue;
-        }
-        if (a[1] == '-') {
-            const char* name = a + 2;
-            const char* eq = strchr(name, '=');
-            size_t nlen = eq ? (size_t)(eq - name) : strlen(name);
-            if (nlen == strlen("always-sigkill") && strncmp(name, "always-sigkill", nlen) == 0) {
-                return true;
-            }
-            for (const struct option* opt = long_opt; opt->name != NULL; opt++) {
-                if (strlen(opt->name) == nlen && strncmp(opt->name, name, nlen) == 0) {
-                    if (opt->has_arg == required_argument && eq == NULL) {
-                        i++;
-                    }
-                    break;
-                }
-            }
-            continue;
-        }
-        for (int j = 1; a[j] != '\0'; j++) {
-            if (a[j] == 'K') {
-                return true;
-            }
-            const char* spec = strchr(short_opt, a[j]);
-            if (spec == NULL) {
-                break;
-            }
-            if (spec[1] == ':') {
-                if (a[j + 1] != '\0') {
-                    break;
-                }
-                i++;
-                break;
-            }
+    bool found = false;
+    int saved_opterr = opterr;
+    int c;
+
+    opterr = 0; /* the real pass reports errors */
+    while ((c = getopt_long(argc, argv, short_opt, long_opt, NULL)) != -1) {
+        if (c == 'K') {
+            found = true;
         }
     }
-    return false;
+    opterr = saved_opterr;
+    /* optind = 0 makes glibc and musl fully reinitialize getopt. */
+    optind = 0;
+    return found;
 }
 
 /* Reject a bad limit as soon as it is seen. -h/-v and a later repeat of the
@@ -336,7 +309,8 @@ int main(int argc, char* argv[])
                 "  -n                        enable d-bus notifications\n"
                 "  -N /PATH/TO/SCRIPT        call script after oom kill\n"
                 "  -g                        kill all processes within a process group\n"
-                "  -K, --always-sigkill      always send SIGKILL instead of SIGTERM, then SIGKILL\n"
+                "  -K, --always-sigkill      send SIGKILL at PERCENT/SIZE, never SIGTERM\n"
+                "                            (KILL_PERCENT/KILL_SIZE are ignored)\n"
                 "  -d, --debug               enable debugging messages\n"
                 "  -v                        print version information and exit\n"
                 "  -r INTERVAL               memory report interval in seconds (default 1), set\n"
