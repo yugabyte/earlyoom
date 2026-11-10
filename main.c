@@ -48,6 +48,38 @@ enum {
 static int set_oom_score_adj(int);
 static void poll_loop(const poll_loop_args_t* args);
 
+/* True when -K / --always-sigkill is present anywhere on the command line.
+ * Runs a quiet getopt_long pre-pass so abbreviations (--always), bundling
+ * (-dK), option arguments (--prefer -K, --pref -K) and "--" are handled
+ * exactly like the real pass. Resets getopt state afterwards. */
+static bool cmdline_has_always_sigkill(int argc, char* argv[], const char* short_opt, const struct option* long_opt)
+{
+    bool found = false;
+    int saved_opterr = opterr;
+    int c;
+
+    opterr = 0; /* the real pass reports errors */
+    while ((c = getopt_long(argc, argv, short_opt, long_opt, NULL)) != -1) {
+        if (c == 'K') {
+            found = true;
+        }
+    }
+    opterr = saved_opterr;
+    /* optind = 0 makes glibc and musl fully reinitialize getopt. */
+    optind = 0;
+    return found;
+}
+
+/* Reject a bad limit as soon as it is seen. -h/-v and a later repeat of the
+ * same option must not hide an earlier fatal value. */
+static void check_limit_arg(const char* flag, const char* optarg, long long upper_limit, bool ignore_kill, int errcode)
+{
+    term_kill_tuple_t tuple = parse_term_kill_tuple(optarg, upper_limit, ignore_kill, true);
+    if (strlen(tuple.err)) {
+        fatal(errcode, "%s: %s", flag, tuple.err);
+    }
+}
+
 // Prevent Golang / Cgo name collision when the test suite runs -
 // Cgo generates it's own main function.
 #ifdef CGO
@@ -147,7 +179,7 @@ int main(int argc, char* argv[])
     meminfo_t m = parse_meminfo();
 
     int c;
-    const char* short_opt = "m:s:M:S:kingN:dvr:ph";
+    const char* short_opt = "m:s:M:S:kKingN:dvr:ph";
     struct option long_opt[] = {
         { "prefer", required_argument, NULL, LONG_OPT_PREFER },
         { "avoid", required_argument, NULL, LONG_OPT_AVOID },
@@ -156,16 +188,27 @@ int main(int argc, char* argv[])
         { "ignore-root-user", no_argument, NULL, LONG_OPT_IGNORE_ROOT },
         { "sort-by-rss", no_argument, NULL, LONG_OPT_SORT_BY_RSS },
         { "syslog", no_argument, NULL, LONG_OPT_USE_SYSLOG },
+        { "always-sigkill", no_argument, NULL, 'K' },
         { "help", no_argument, NULL, 'h' },
         { "debug", no_argument, NULL, 'd' },
         { 0, 0, NULL, 0 } /* end-of-array marker */
     };
     bool have_m = 0, have_M = 0, have_s = 0, have_S = 0;
     double mem_term_kib = 0, mem_kill_kib = 0, swap_term_kib = 0, swap_kill_kib = 0;
+    /* Saved so the last occurrence can be parsed again after getopt. */
+    const char* opt_m = NULL;
+    const char* opt_s = NULL;
+    const char* opt_M = NULL;
+    const char* opt_S = NULL;
+
+    /* Know -K before the first limit, wherever it sits on the command line.
+     * The per-option check then uses the same ignore_kill as the final parse. */
+    if (cmdline_has_always_sigkill(argc, argv, short_opt, long_opt)) {
+        args.always_sigkill = true;
+    }
 
     while ((c = getopt_long(argc, argv, short_opt, long_opt, NULL)) != -1) {
         float report_interval_f = 0;
-        term_kill_tuple_t tuple;
 
         switch (c) {
         case -1: /* no more arguments */
@@ -173,45 +216,21 @@ int main(int argc, char* argv[])
             break;
         case 'm':
             // Use 99 as upper limit. Passing "-m 100" makes no sense.
-            tuple = parse_term_kill_tuple(optarg, 99);
-            if (strlen(tuple.err)) {
-                fatal(15, "-m: %s", tuple.err);
-            }
-            args.mem_term_percent = tuple.term;
-            args.mem_kill_percent = tuple.kill;
-            have_m = 1;
+            check_limit_arg("-m", optarg, 99, args.always_sigkill, 15);
+            opt_m = optarg;
             break;
         case 's':
             // Using "-s 100" is a valid way to ignore swap usage
-            tuple = parse_term_kill_tuple(optarg, 100);
-            if (strlen(tuple.err)) {
-                fatal(16, "-s: %s", tuple.err);
-            }
-            args.swap_term_percent = tuple.term;
-            args.swap_kill_percent = tuple.kill;
-            have_s = 1;
+            check_limit_arg("-s", optarg, 100, args.always_sigkill, 16);
+            opt_s = optarg;
             break;
         case 'M':
-            tuple = parse_term_kill_tuple(optarg, m.MemTotalKiB * 100 / 99);
-            if (strlen(tuple.err)) {
-                fatal(15, "-M: %s", tuple.err);
-            }
-            mem_term_kib = tuple.term;
-            mem_kill_kib = tuple.kill;
-            have_M = 1;
+            check_limit_arg("-M", optarg, m.MemTotalKiB * 100 / 99, args.always_sigkill, 15);
+            opt_M = optarg;
             break;
         case 'S':
-            tuple = parse_term_kill_tuple(optarg, m.SwapTotalKiB * 100 / 99);
-            if (strlen(tuple.err)) {
-                fatal(16, "-S: %s", tuple.err);
-            }
-            if (m.SwapTotalKiB == 0) {
-                warn("warning: -S: total swap is zero, using default percentages\n");
-                break;
-            }
-            swap_term_kib = tuple.term;
-            swap_kill_kib = tuple.kill;
-            have_S = 1;
+            check_limit_arg("-S", optarg, m.SwapTotalKiB * 100 / 99, args.always_sigkill, 16);
+            opt_S = optarg;
             break;
         case 'k':
             fprintf(stderr, "Option -k is ignored since earlyoom v1.2\n");
@@ -225,6 +244,10 @@ int main(int argc, char* argv[])
             break;
         case 'g':
             args.kill_process_group = true;
+            break;
+        case 'K':
+            args.always_sigkill = true;
+            fprintf(stderr, "always sending SIGKILL (no SIGTERM)\n");
             break;
         case 'N':
             args.notify_ext = optarg;
@@ -286,6 +309,8 @@ int main(int argc, char* argv[])
                 "  -n                        enable d-bus notifications\n"
                 "  -N /PATH/TO/SCRIPT        call script after oom kill\n"
                 "  -g                        kill all processes within a process group\n"
+                "  -K, --always-sigkill      send SIGKILL at PERCENT/SIZE, never SIGTERM\n"
+                "                            (KILL_PERCENT/KILL_SIZE are ignored)\n"
                 "  -d, --debug               enable debugging messages\n"
                 "  -v                        print version information and exit\n"
                 "  -r INTERVAL               memory report interval in seconds (default 1), set\n"
@@ -310,6 +335,48 @@ int main(int argc, char* argv[])
 
     if (optind < argc) {
         fatal(13, "extra argument not understood: '%s'\n", argv[optind]);
+    }
+    /* Last occurrence wins. warn_clamp is false: the in-loop check already
+     * logged any term < kill clamp for this value. */
+    if (opt_m) {
+        term_kill_tuple_t tuple = parse_term_kill_tuple(opt_m, 99, args.always_sigkill, false);
+        if (strlen(tuple.err)) {
+            fatal(15, "-m: %s", tuple.err);
+        }
+        args.mem_term_percent = tuple.term;
+        args.mem_kill_percent = tuple.kill;
+        have_m = 1;
+    }
+    if (opt_s) {
+        term_kill_tuple_t tuple = parse_term_kill_tuple(opt_s, 100, args.always_sigkill, false);
+        if (strlen(tuple.err)) {
+            fatal(16, "-s: %s", tuple.err);
+        }
+        args.swap_term_percent = tuple.term;
+        args.swap_kill_percent = tuple.kill;
+        have_s = 1;
+    }
+    if (opt_M) {
+        term_kill_tuple_t tuple = parse_term_kill_tuple(opt_M, m.MemTotalKiB * 100 / 99, args.always_sigkill, false);
+        if (strlen(tuple.err)) {
+            fatal(15, "-M: %s", tuple.err);
+        }
+        mem_term_kib = tuple.term;
+        mem_kill_kib = tuple.kill;
+        have_M = 1;
+    }
+    if (opt_S) {
+        term_kill_tuple_t tuple = parse_term_kill_tuple(opt_S, m.SwapTotalKiB * 100 / 99, args.always_sigkill, false);
+        if (strlen(tuple.err)) {
+            fatal(16, "-S: %s", tuple.err);
+        }
+        if (m.SwapTotalKiB == 0) {
+            warn("warning: -S: total swap is zero, using default percentages\n");
+        } else {
+            swap_term_kib = tuple.term;
+            swap_kill_kib = tuple.kill;
+            have_S = 1;
+        }
     }
     // Merge "-M" with "-m" values
     if (have_M) {
@@ -376,13 +443,26 @@ int main(int argc, char* argv[])
         }
     }
 
+    /* -K: act at the SIGTERM thresholds, but send SIGKILL only.
+     * KILL_PERCENT / KILL_SIZE are ignored. Matching the two limits keeps
+     * lowmem_sig() and the escalation path on the SIGKILL side. */
+    if (args.always_sigkill) {
+        args.mem_kill_percent = args.mem_term_percent;
+        args.swap_kill_percent = args.swap_term_percent;
+    }
+
     // Print memory limits
     fprintf(stderr, "mem total: %4lld MiB, user mem total: %4lld MiB, swap total: %4lld MiB\n",
         m.MemTotalKiB / 1024, m.UserMemTotalKiB / 1024, m.SwapTotalKiB / 1024);
-    fprintf(stderr, "sending SIGTERM when mem avail <= " PRIPCT " and swap free <= " PRIPCT ",\n",
-        args.mem_term_percent, args.swap_term_percent);
-    fprintf(stderr, "        SIGKILL when mem avail <= " PRIPCT " and swap free <= " PRIPCT "\n",
-        args.mem_kill_percent, args.swap_kill_percent);
+    if (args.always_sigkill) {
+        fprintf(stderr, "sending SIGKILL when mem avail <= " PRIPCT " and swap free <= " PRIPCT "\n",
+            args.mem_term_percent, args.swap_term_percent);
+    } else {
+        fprintf(stderr, "sending SIGTERM when mem avail <= " PRIPCT " and swap free <= " PRIPCT ",\n",
+            args.mem_term_percent, args.swap_term_percent);
+        fprintf(stderr, "        SIGKILL when mem avail <= " PRIPCT " and swap free <= " PRIPCT "\n",
+            args.mem_kill_percent, args.swap_kill_percent);
+    }
 
     startup_selftests(&args);
 
