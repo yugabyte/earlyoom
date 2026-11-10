@@ -144,6 +144,13 @@ func TestCli(t *testing.T) {
 		{args: []string{"-K", "-M", fmt.Sprintf("%d,%d", memTotal*1/100, memTotal*2/100)}, code: -1, stderrContains: "sending SIGKILL when mem avail <=  1.00%", stderrExcludes: "setting SIGTERM = SIGKILL", stdoutContains: memReport},
 		{args: []string{"-M", fmt.Sprintf("%d,%d", memTotal*1/100, memTotal*2/100), "-K"}, code: -1, stderrContains: "sending SIGKILL when mem avail <=  1.00%", stderrExcludes: "setting SIGTERM = SIGKILL", stdoutContains: memReport},
 		{args: []string{"-h"}, code: 0, stderrContains: "--always-sigkill", stdoutEmpty: true},
+		// Abbreviated long option behaves like --always-sigkill, regardless of position.
+		{args: []string{"-m", "10,20", "--always"}, code: -1, stderrContains: "sending SIGKILL when mem avail <= 10.00%", stderrExcludes: "setting SIGTERM = SIGKILL", stdoutContains: memReport},
+		{args: []string{"-m", "10,abc", "--alw"}, code: -1, stderrContains: "sending SIGKILL when mem avail <= 10.00%", stdoutContains: memReport},
+		// "-K" consumed as the argument of an (abbreviated) option is not -K.
+		{args: []string{"--prefer", "-K"}, code: -1, stderrContains: "sending SIGTERM when", stderrExcludes: "always sending SIGKILL", stdoutContains: memReport},
+		{args: []string{"--pref", "-K"}, code: -1, stderrContains: "sending SIGTERM when", stderrExcludes: "always sending SIGKILL", stdoutContains: memReport},
+		{args: []string{"-dK"}, code: -1, stderrContains: "always sending SIGKILL", stdoutContains: memReport},
 		{args: []string{"-i"}, code: -1, stderrContains: "Option -i is ignored"},
 		// Extra arguments should error out
 		{args: []string{"xyz"}, code: 13, stderrContains: "extra argument not understood", stdoutEmpty: true},
