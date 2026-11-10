@@ -93,8 +93,15 @@ With `-K`, SIGKILL is sent at SIZE and KILL_SIZE is ignored.
 Always send SIGKILL when available memory and free swap are at or below
 the PERCENT / SIZE limits. earlyoom does not send SIGTERM first.
 
-KILL_PERCENT and KILL_SIZE are ignored. Killing starts at the same limits
-that would otherwise send SIGTERM.
+KILL_PERCENT and KILL_SIZE are ignored: they are not parsed or checked.
+PERCENT / SIZE are used exactly as given. This is not always the limit that
+would send SIGTERM without `-K`:
+
+* Without `-K`, a KILL_PERCENT / KILL_SIZE above PERCENT / SIZE raises the
+  SIGTERM limit to the kill value. `-m 10,20` sends SIGTERM at 20%.
+  With `-K`, `-m 10,20` sends SIGKILL at 10%.
+* A PERCENT / SIZE of zero is fatal with `-K`, even if a kill value is given.
+  `-m 0,5` is accepted without `-K` (SIGTERM at 5%) but fails with `-K`.
 
 Examples:
 
