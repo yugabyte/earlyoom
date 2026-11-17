@@ -466,9 +466,11 @@ int main(int argc, char* argv[])
         }
     }
 
-    /* -K: act at the SIGTERM thresholds, but send SIGKILL only.
-     * KILL_PERCENT / KILL_SIZE are ignored. Matching the two limits keeps
-     * lowmem_sig() and the escalation path on the SIGKILL side. */
+    /* -K: send SIGKILL at PERCENT/SIZE exactly as given. That is not the
+     * SIGTERM limit: without -K, -m 10,20 sends SIGTERM at 20%; with -K it
+     * sends SIGKILL at 10%. KILL_PERCENT / KILL_SIZE are ignored. Copying
+     * PERCENT/SIZE into the kill limits keeps lowmem_sig() and the
+     * escalation path on the SIGKILL side. */
     if (args.always_sigkill) {
         args.mem_kill_percent = args.mem_term_percent;
         args.swap_kill_percent = args.swap_term_percent;
