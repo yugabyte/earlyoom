@@ -162,8 +162,10 @@ static double parse_part(term_kill_tuple_t* tuple, const char* part, long long u
 }
 
 // Parse the "term[,kill]" tuple in optarg, examples: "123", "123,456".
-// Guaranteed value range: 0 <= term <= kill <= upper_limit.
-term_kill_tuple_t parse_term_kill_tuple(const char* optarg, long long upper_limit)
+// When ignore_kill is false and term < kill, term is raised to kill.
+// When ignore_kill is true, the kill half is not parsed.
+// warn_clamp controls only the log line for that raise.
+term_kill_tuple_t parse_term_kill_tuple(const char* optarg, long long upper_limit, bool ignore_kill, bool warn_clamp)
 {
     term_kill_tuple_t tuple = { 0 };
     // writable copy of optarg
@@ -190,22 +192,28 @@ term_kill_tuple_t parse_term_kill_tuple(const char* optarg, long long upper_limi
     if (strlen(tuple.err)) {
         return tuple;
     }
-    if (part2) {
+    if (ignore_kill) {
+        // -K: do not parse KILL_PERCENT / KILL_SIZE. Garbage or an out-of-range
+        // kill half must not fail, and term is not raised to match it.
+        tuple.kill = tuple.term;
+    } else if (part2) {
         // Parse part2
         tuple.kill = parse_part(&tuple, part2, upper_limit);
         if (strlen(tuple.err)) {
             return tuple;
         }
+        // Setting term < kill makes no sense
+        if (tuple.term < tuple.kill) {
+            if (warn_clamp) {
+                warn("warning: SIGTERM value %.2lf is below SIGKILL value %.2lf, setting SIGTERM = SIGKILL = %.2lf\n",
+                    tuple.term, tuple.kill, tuple.kill);
+            }
+            tuple.term = tuple.kill;
+        }
     } else {
         // User passed only the SIGTERM value: the SIGKILL value is calculated as
         // SIGTERM/2.
         tuple.kill = tuple.term / 2;
-    }
-    // Setting term < kill makes no sense
-    if (tuple.term < tuple.kill) {
-        warn("warning: SIGTERM value %.2lf is below SIGKILL value %.2lf, setting SIGTERM = SIGKILL = %.2lf\n",
-            tuple.term, tuple.kill, tuple.kill);
-        tuple.term = tuple.kill;
     }
     // Sanity checks
     if (tuple.kill == 0 && tuple.term == 0) {
